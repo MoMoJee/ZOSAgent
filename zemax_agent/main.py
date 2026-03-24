@@ -22,16 +22,31 @@ SYSTEM_PROMPT = """\
 - 查看当前光学系统信息（表面、光圈、视场、波长）
 - 创建和编辑光学表面（设置曲率半径、厚度、材料、半口径、圆锥系数等）
 - 设置系统参数（光圈、视场、波长）
-- 将参数设为变量并运行优化
+- 评价函数管理：用向导设置默认评价函数、手动添加/删除操作数（EFFL、BFL、TOTR 等）、查看操作数详情
+- 系统性能分析：计算有效焦距、后焦距、总长等一阶光学参数
+- 将参数设为变量并运行优化（局部优化、快速聚焦）
 - 文件管理（新建、打开、保存）
 
-操作规范：
-1. 执行操作前，先用 get_system_info 了解当前系统状态
-2. 修改系统后，简要报告所做的更改
-3. 对于不确定的参数，先询问用户
-4. 使用专业但易懂的光学术语
-5. 表面编号从 0 开始：0 = 物面 (OBJ)，最后一个 = 像面 (IMA)
-6. 曲率半径单位为 mm，波长单位为 μm
+核心操作规范：
+1. **保护用户已有设计**：执行任何操作前，先用 get_system_info 查看当前系统状态。
+   如果系统中已有表面/透镜数据，绝不能在未经用户明确确认的情况下调用 new_file 清除它们。
+2. 修改系统后，简要报告所做的更改。
+3. 对于不确定的参数，先询问用户。
+4. 使用专业但易懂的光学术语。
+5. 表面编号从 0 开始：0 = 物面 (OBJ)，最后一个 = 像面 (IMA)。
+6. 曲率半径单位为 mm，波长单位为 μm。
+7. 如果工具返回错误，分析错误原因后尝试换一种方式，不要无限重试同一操作。
+8. **绝不要在用户没有明确要求的情况下调用 new_file**。当用户问"看看当前系统"或类似问题时，
+   只需调用 get_system_info 读取并报告，不要创建新系统。
+
+优化工作流建议：
+1. 先用 get_system_info 了解当前系统
+2. 用 set_default_merit_function 设置基本评价函数（如 RMS 光斑半径）
+3. 如需约束焦距等参数，用 add_operand 添加 EFFL 等操作数并设置目标值和权重
+4. 用 make_variable 设置需要优化的参数为变量
+5. 用 run_optimization 运行优化
+6. 用 get_first_order_data 查看优化后的系统性能
+7. 用 get_operands 查看评价函数各项指标
 
 注意：你只能通过提供的工具与 OpticStudio 交互，不能直接修改任何数据。
 """
@@ -50,6 +65,8 @@ def run_agent(client: OpenAI, model: str, toolkit: ZemaxToolkit):
     print("  Zemax OpticStudio AI 助手")
     print("  输入自然语言指令与 OpticStudio 交互")
     print("  输入 'quit' 或 'exit' 退出")
+    print("  输入 'reconnect' 手动重连 OpticStudio")
+    print("  输入 'clear' 清空对话历史")
     print("=" * 60 + "\n")
 
     while True:
@@ -64,6 +81,20 @@ def run_agent(client: OpenAI, model: str, toolkit: ZemaxToolkit):
         if user_input.lower() in ("quit", "exit", "q"):
             print("再见！")
             break
+
+        # ---- 特殊命令 ----
+        if user_input.lower() == "reconnect":
+            print("\033[33m正在重连 OpticStudio...\033[0m")
+            if toolkit.conn.reconnect():
+                print("\033[32m重连成功！\033[0m\n")
+            else:
+                print("\033[31m重连失败。请确保 OpticStudio 已打开 Interactive Extension。\033[0m\n")
+            continue
+
+        if user_input.lower() == "clear":
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            print("\033[33m对话历史已清空。\033[0m\n")
+            continue
 
         messages.append({"role": "user", "content": user_input})
 
@@ -166,6 +197,11 @@ def main():
         help="Zemax 连接模式",
     )
     parser.add_argument("--instance", type=int, default=None, help="Extension 实例编号")
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="启动前清理 win32com gen_py ZOSAPI 缓存",
+    )
     args = parser.parse_args()
 
     # 加载 .env 文件
@@ -186,6 +222,15 @@ def main():
         print("方式 3: 设置环境变量 OPENAI_API_KEY")
         sys.exit(1)
 
+    # 可选: 清理 gen_py 缓存
+    if args.clear_cache:
+        print("正在清理 ZOSAPI gen_py 缓存...")
+        try:
+            ZemaxConnection.clear_gen_py_cache()
+            print("\033[32m缓存已清理。\033[0m")
+        except Exception as e:
+            print(f"\033[33m缓存清理失败 (非致命): {e}\033[0m")
+
     # 初始化 LLM 客户端
     print(f"LLM 配置: base_url={base_url}, model={model}")
     client = OpenAI(api_key=api_key, base_url=base_url)
@@ -200,9 +245,15 @@ def main():
         print("\n请确保:")
         print("  1. Zemax OpticStudio 正在运行")
         print("  2. 已点击 Programming → Interactive Extension")
+        print("\n提示: 如果持续失败，尝试 --clear-cache 清理旧缓存")
         sys.exit(1)
 
     print(f"\033[32m已连接到 OpticStudio (序列号: {conn.app.SerialCode})\033[0m")
+
+    # 显示诊断信息
+    wl_cache = conn._prop_cache.get("IWavelength", {})
+    fl_cache = conn._prop_cache.get("IField", {})
+    print(f"\033[90m  属性映射诊断: IWavelength.value='{wl_cache.get('value')}', IField.x='{fl_cache.get('x')}'\033[0m")
 
     toolkit = ZemaxToolkit(conn)
 
