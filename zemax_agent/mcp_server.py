@@ -34,6 +34,7 @@ import mcp.types as types
 
 from zemax_connection import ZemaxConnection
 from tools import TOOL_DEFINITIONS, ZemaxToolkit
+from logger import logger
 
 # 加载 .env (API Key 对 MCP 服务器本身不需要，但 ZemaxConnection 可能用 ZEMAX_MODE 等)
 load_dotenv(_HERE / ".env")
@@ -95,6 +96,7 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
 
     # 若连接断开，先自动尝试重连一次再报错
     if not _toolkit.conn.is_alive:
+        logger.warning(f"MCP 工具 {name} 执行前检测到连接不活跃，尝试自动重连")
         _log("连接不活跃，尝试自动重连...")
         ok = _toolkit.conn.reconnect(max_retries=2, retry_delay=1.0)
         if not ok:
@@ -109,14 +111,18 @@ async def call_tool(name: str, arguments: dict | None) -> list[types.TextContent
                 ensure_ascii=False,
             )
             return [types.TextContent(type="text", text=payload)]
+        logger.info(f"MCP 服务器自动重连成功，继续执行工具 {name}")
         _log("自动重连成功，继续执行工具...")
 
     # COM 调用是同步的，直接在协程中执行。
     # (MCP stdio 服务器为单客户端模式，阻塞事件循环是可接受的)
     # win32com STA 线程模型要求在初始化线程上调用，不能用 run_in_executor。
+    logger.info(f"MCP 工具调用: {name}")
     try:
         result_str = _toolkit.dispatch(name, arguments or {})
+        logger.debug(f"MCP 工具结果: {result_str[:300]}")
     except Exception as e:
+        logger.error(f"MCP 工具 {name} 异常: {e}", exc_info=True)
         result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
 
     return [types.TextContent(type="text", text=result_str)]
@@ -126,12 +132,15 @@ def _handle_reconnect() -> list[types.TextContent]:
     """执行 reconnect_zemax 工具逻辑."""
     if _toolkit is None:
         return [types.TextContent(type="text", text=json.dumps({"error": "toolkit 未初始化"}))]
+    logger.info("MCP 客户端触发手动重连")
     _log("手动重连请求...")
     ok = _toolkit.conn.reconnect(max_retries=3, retry_delay=2.0)
     if ok:
+        logger.info("MCP 重连成功")
         _log("重连成功")
         payload = json.dumps({"ok": True, "message": "已成功重连到 OpticStudio"}, ensure_ascii=False)
     else:
+        logger.warning("MCP 重连失败")
         payload = json.dumps(
             {"ok": False, "error": "重连失败。请确保 OpticStudio 正在运行且 Interactive Extension 已激活。"},
             ensure_ascii=False,
@@ -208,6 +217,7 @@ def _log(msg: str):
 async def async_main(zemax_mode: str, instance: int):
     global _toolkit
     _toolkit = _init_zemax_connection(zemax_mode, instance)
+    logger.info(f"MCP 服务器启动: zemax_mode={zemax_mode}, instance={instance}")
     _log("Zemax OpticStudio MCP 服务器已启动 (stdio transport)")
 
     async with stdio_server() as (read_stream, write_stream):

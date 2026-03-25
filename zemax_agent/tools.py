@@ -4,6 +4,7 @@ import json
 import traceback
 
 from zemax_connection import ZemaxConnection
+from logger import logger
 
 # ---------------------------------------------------------------------------
 #  OpenAI function-calling 工具模式定义
@@ -518,6 +519,43 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    # ----- UI 刷新与布局工具 -----
+    {
+        "type": "function",
+        "function": {
+            "name": "update_ui",
+            "description": (
+                "刷新 OpticStudio 图形界面。调用后 GUI 中已打开的编辑器和分析窗口都会更新显示。"
+                "在通过 API 修改系统后调用此工具可使 LDE、2D Layout 等窗口同步刷新。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_layout",
+            "description": (
+                "在 OpticStudio GUI 中打开一个新的 2D 或 3D 布局图窗口，显示当前光学系统结构。"
+                "窗口会自动计算并渲染。可选择将图像导出到文件 (.bmp/.wmf)。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "layout_type": {
+                        "type": "string",
+                        "enum": ["2D", "3D"],
+                        "description": "布局类型: 2D=横截面, 3D=三维视图 (默认 2D)",
+                    },
+                    "export_path": {
+                        "type": "string",
+                        "description": "可选：导出图像的文件路径 (支持 .bmp/.wmf)。不提供则只在 GUI 中显示。",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -540,39 +578,81 @@ class ZemaxToolkit:
         """
         fn = getattr(self, tool_name, None)
         if fn is None:
+            logger.warning(f"未知工具调用: {tool_name}")
             return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False)
 
         # 执行前检测连接状态
         if not self.conn.is_alive:
+            logger.warning(f"工具 {tool_name} 执行前检测到连接丢失，尝试自动重连")
             print("\033[33m  [连接丢失] 正在尝试自动重连...\033[0m")
             if not self.conn.reconnect():
+                logger.error("自动重连失败，工具执行中止")
                 return json.dumps(
                     {"error": "OpticStudio 连接已断开且无法自动重连。请在 Zemax 中重新打开 Interactive Extension，然后输入 reconnect 手动重连。"},
                     ensure_ascii=False,
                 )
+            logger.info("自动重连成功，继续执行工具")
             print("\033[32m  [已重连] 继续执行工具...\033[0m")
 
         try:
             result = fn(**arguments)
-            return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
+            result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
+            # 工具执行成功后自动刷新 UI（仅对写操作工具）
+            if tool_name not in _READ_ONLY_TOOLS:
+                self._auto_refresh_ui()
+            return result_str
         except Exception as e:
             err_str = str(e)
             # 检测 COM 断连类异常，尝试重连后重试一次
             if _is_com_disconnect_error(err_str):
+                logger.warning(f"工具 {tool_name} 触发 COM 断连异常，尝试重连: {err_str[:200]}")
                 print("\033[33m  [COM 异常] 连接可能已断开，尝试重连...\033[0m")
                 if self.conn.reconnect():
                     try:
                         result = fn(**arguments)
-                        return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
+                        result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2)
+                        if tool_name not in _READ_ONLY_TOOLS:
+                            self._auto_refresh_ui()
+                        return result_str
                     except Exception as e2:
+                        logger.error(f"工具 {tool_name} 重连后再次失败: {e2}", exc_info=True)
                         return json.dumps(
                             {"error": str(e2), "traceback": traceback.format_exc()},
                             ensure_ascii=False,
                         )
+            logger.error(f"工具 {tool_name} 执行失败: {err_str[:300]}")
             return json.dumps(
                 {"error": err_str, "traceback": traceback.format_exc()},
                 ensure_ascii=False,
             )
+
+    def _auto_refresh_ui(self) -> None:
+        """工具执行后自动刷新 OpticStudio GUI（静默，不抛出异常）.
+
+        策略：
+        1. 调用 UpdateStatus() 刷新主窗口 (LDE / 系统编辑器)
+        2. 如果有任何已打开的分析窗口，逐一调用 ApplyAndWaitForCompletion() 重算并刷新
+        """
+        try:
+            system = self.conn.system
+            try:
+                system.UpdateStatus()
+            except Exception:
+                pass
+            try:
+                analyses = system.Analyses
+                n = _safe(analyses, "NumberOfAnalyses", 0)
+                for i in range(1, n + 1):
+                    try:
+                        a = analyses.Get_AnalysisAtIndex(i)
+                        if a is not None:
+                            a.ApplyAndWaitForCompletion()
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     # ---- 系统信息 ----
     def get_system_info(self) -> str:
@@ -1244,6 +1324,90 @@ class ZemaxToolkit:
 
         return json.dumps(results, ensure_ascii=False, indent=2)
 
+    # ---- UI 刷新与布局 ----
+    def update_ui(self) -> str:
+        """刷新 OpticStudio GUI，并刷新所有已打开的分析窗口。"""
+        system = self.conn.system
+
+        # 1. UpdateStatus 刷新主窗口 (LDE / 编辑器)
+        status_msg = None
+        try:
+            status_msg = system.UpdateStatus()
+        except Exception as e:
+            status_msg = f"UpdateStatus 异常: {e}"
+
+        # 2. 遍历已打开的分析窗口并刷新
+        refreshed = 0
+        try:
+            analyses = system.Analyses
+            n = _safe(analyses, "NumberOfAnalyses", 0)
+            for i in range(1, n + 1):
+                try:
+                    a = analyses.Get_AnalysisAtIndex(i)
+                    if a is not None:
+                        a.ApplyAndWaitForCompletion()
+                        refreshed += 1
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return json.dumps(
+            {"ok": True, "status": status_msg, "analyses_refreshed": refreshed},
+            ensure_ascii=False,
+        )
+
+    def open_layout(self, layout_type: str = "2D", export_path: str = None) -> str:
+        """在 OpticStudio GUI 中打开 2D/3D 布局图窗口。"""
+        system = self.conn.system
+
+        # AnalysisIDM 枚举值
+        layout_map = {"2D": 56, "3D": 57}  # Draw2D=56, Draw3D=57
+        analysis_type = layout_map.get(layout_type.upper(), 56)
+
+        analyses = system.Analyses
+        analysis = None
+        try:
+            analysis = analyses.New_Analysis(analysis_type)
+        except Exception as e:
+            return json.dumps(
+                {"error": f"无法打开 {layout_type} 布局窗口: {e}"},
+                ensure_ascii=False,
+            )
+
+        if analysis is None:
+            return json.dumps(
+                {"error": f"无法打开 {layout_type} 布局窗口 (返回 None)"},
+                ensure_ascii=False,
+            )
+
+        # 等待计算完成
+        try:
+            analysis.ApplyAndWaitForCompletion()
+        except Exception:
+            try:
+                analysis.WaitForCompletion()
+            except Exception:
+                pass
+
+        result = {
+            "ok": True,
+            "layout_type": layout_type,
+            "message": f"{layout_type} 布局图已在 OpticStudio GUI 中打开",
+        }
+
+        # 可选：导出到文件
+        if export_path:
+            try:
+                analysis.ToFile(export_path, False, False)
+                result["exported_to"] = export_path
+            except Exception as e:
+                result["export_error"] = str(e)
+
+        # 注意：不要 Close()，让窗口保留在 GUI 中供用户查看
+
+        return json.dumps(result, ensure_ascii=False)
+
 
 # ---------------------------------------------------------------------------
 #  辅助
@@ -1300,6 +1464,18 @@ def _safe_set_attr(obj, attr, value):
         return True
     except Exception:
         return False
+
+
+# 只读工具集 — 不触发自动 UI 刷新
+_READ_ONLY_TOOLS: frozenset[str] = frozenset({
+    "get_system_info",
+    "get_merit_function",
+    "get_operands",
+    "get_first_order_data",
+    "get_glass_catalogs",
+    "update_ui",      # 本身就是刷新工具，无需再次触发
+    "open_layout",    # 打开窗口后自身已做 ApplyAndWaitForCompletion
+})
 
 
 def _is_com_disconnect_error(err_str: str) -> bool:

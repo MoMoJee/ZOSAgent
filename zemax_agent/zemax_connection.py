@@ -8,6 +8,8 @@ import os
 import shutil
 import time
 
+from logger import logger
+
 
 class ZemaxConnection:
     """通过 COM 接口 (ZOS-API) 管理与 OpticStudio 的连接."""
@@ -96,6 +98,7 @@ class ZemaxConnection:
         self._prop_cache = {}
         self._probe_interfaces()
 
+        logger.info(f"OpticStudio 连接成功: mode={mode}, instance={instance}, serial={self._app.SerialCode}")
         return True
 
     # ------------------------------------------------------------------
@@ -216,13 +219,16 @@ class ZemaxConnection:
         for attempt in range(1, max_retries + 1):
             try:
                 self.connect(mode=self._mode, instance=self._instance)
+                logger.info(f"重连成功（第 {attempt} 次）")
                 return True
             except Exception as e:
                 if attempt < max_retries:
+                    logger.warning(f"重连尝试 {attempt}/{max_retries} 失败: {e}")
                     print(f"\033[33m  重连尝试 {attempt}/{max_retries} 失败: {e}\033[0m")
                     print(f"\033[33m  请确保 OpticStudio 已打开 Interactive Extension，{retry_delay}秒后重试...\033[0m")
                     time.sleep(retry_delay)
                 else:
+                    logger.error(f"重连彻底失败（{max_retries}次）: {e}")
                     print(f"\033[31m  重连失败 ({max_retries}次尝试): {e}\033[0m")
         return False
 
@@ -256,6 +262,7 @@ class ZemaxConnection:
         return self._system.SystemData
 
     def disconnect(self):
+        logger.info("断开 OpticStudio 连接")
         self._connection = None
         self._app = None
         self._system = None

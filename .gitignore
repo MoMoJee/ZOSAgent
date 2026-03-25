@@ -5,3 +5,5 @@
 /demos/
 /homeworks/
 /.vscode/
+/dist/
+/build/
