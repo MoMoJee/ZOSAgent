@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "zemax-opticstudio": {
+      "command": "C:\\Users\\MoMoJee\\Documents\\Zemax\\ZOS-API Projects\\PythonZOSConnection\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\MoMoJee\\Documents\\Zemax\\ZOS-API Projects\\PythonZOSConnection\\zemax_agent\\mcp_server.py",
+        "--zemax-mode",
+        "extension"
+      ]
+    }
+  }
+}

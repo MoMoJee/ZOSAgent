@@ -471,6 +471,53 @@ TOOL_DEFINITIONS = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    # ----- 玻璃库管理工具 -----
+    {
+        "type": "function",
+        "function": {
+            "name": "get_glass_catalogs",
+            "description": (
+                "获取玻璃库（材料目录）信息：当前使用的目录列表、系统中所有可用的目录列表。"
+                "可选：查询某个目录中的所有材料名称。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "要查询材料列表的目录名称（如 SCHOTT, OHARA, HOYA 等）。不提供则只返回目录列表。",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_glass_catalogs",
+            "description": (
+                "管理系统使用的玻璃库（材料目录）：添加或移除目录。"
+                "添加前会检查该目录是否可用，移除前会检查是否正在使用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "add": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要添加的目录名称列表，如 [\"SCHOTT\", \"OHARA\"]",
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要移除的目录名称列表",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -1141,6 +1188,61 @@ class ZemaxToolkit:
             ensure_ascii=False,
             indent=2,
         )
+
+    # ---- 玻璃库管理 ----
+    def get_glass_catalogs(self, catalog: str = None) -> str:
+        """获取玻璃库信息：当前使用的目录、可用目录、指定目录中的材料。"""
+        mat_cat = self.conn.system_data.MaterialCatalogs
+
+        in_use = list(_safe(mat_cat, "GetCatalogsInUse", ()) or ())
+        available = list(_safe(mat_cat, "GetAvailableCatalogs", ()) or ())
+
+        result = {
+            "catalogs_in_use": in_use,
+            "available_catalogs": available,
+        }
+
+        if catalog:
+            materials = list(mat_cat.GetMaterialsInCatalog(catalog) or ())
+            result["query_catalog"] = catalog
+            result["materials"] = materials
+            result["material_count"] = len(materials)
+
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def set_glass_catalogs(self, add: list = None, remove: list = None) -> str:
+        """添加或移除玻璃库目录。"""
+        mat_cat = self.conn.system_data.MaterialCatalogs
+
+        results = {"added": [], "removed": [], "errors": []}
+
+        if remove:
+            for cat_name in remove:
+                try:
+                    ok = mat_cat.RemoveCatalog(cat_name)
+                    if ok:
+                        results["removed"].append(cat_name)
+                    else:
+                        results["errors"].append(f"移除 '{cat_name}' 失败 (可能不在使用列表中)")
+                except Exception as e:
+                    results["errors"].append(f"移除 '{cat_name}' 异常: {e}")
+
+        if add:
+            for cat_name in add:
+                try:
+                    ok = mat_cat.AddCatalog(cat_name)
+                    if ok:
+                        results["added"].append(cat_name)
+                    else:
+                        results["errors"].append(f"添加 '{cat_name}' 失败 (可能名称不正确或已在使用)")
+                except Exception as e:
+                    results["errors"].append(f"添加 '{cat_name}' 异常: {e}")
+
+        # 返回更新后的状态
+        results["catalogs_in_use"] = list(_safe(mat_cat, "GetCatalogsInUse", ()) or ())
+        results["ok"] = len(results["errors"]) == 0
+
+        return json.dumps(results, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
