@@ -7,3 +7,7 @@
 /.vscode/
 /dist/
 /build/
+*.log
+*.lock
+/参考设计/
+/教学讲义/

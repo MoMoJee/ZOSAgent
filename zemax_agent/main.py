@@ -327,7 +327,7 @@ def run_agent(client: OpenAI, model: str, toolkit: ZemaxToolkit):
 
 
 def run_mcp_mode(zemax_mode: str, instance: int, clear_cache: bool):
-    """以 MCP stdio 服务器模式运行（替换当前进程）."""
+    """以 MCP stdio 服务器模式运行."""
     logger.info(f"切换到 MCP 服务器模式: zemax_mode={zemax_mode}, instance={instance}")
     mcp_script = _HERE / "mcp_server.py"
     if not mcp_script.exists():
@@ -338,8 +338,10 @@ def run_mcp_mode(zemax_mode: str, instance: int, clear_cache: bool):
            "--instance", str(instance)]
     if clear_cache:
         cmd.append("--clear-cache")
-    # 用 MCP 服务器进程替换当前进程（exec-style，Windows 下用 execv 模拟）
-    os.execv(sys.executable, cmd)
+    # Windows 上 os.execv 在路径含空格时存在 argv[0] 引号处理 bug，改用 subprocess
+    import subprocess
+    result = subprocess.run(cmd)
+    sys.exit(result.returncode)
 
 
 # ---------------------------------------------------------------------------
