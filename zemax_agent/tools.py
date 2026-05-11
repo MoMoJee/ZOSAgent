@@ -556,6 +556,135 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_image_quality",
+            "description": (
+                "获取当前系统各视场的成像质量定量指标：RMS 弥散斑半径 (μm)、RMS 波前误差 (waves)，"
+                "并计算艾里斑半径、判断是否达到衍射极限 (Marechal 准则 RMS < λ/14)。"
+                "这是设计验收的核心评估工具，建议每轮优化后调用以确认是否满足 SPT 指标。"
+                "注意：RSCE/RWCE 操作数使用当前 MFE 的采样配置；若未设置评价函数，"
+                "建议先调用 set_default_merit_function 以配置有效采样。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wave": {
+                        "type": "integer",
+                        "description": "波长编号 (1-N)；0 = 多色综合 (默认)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_aberrations",
+            "description": (
+                "获取系统三阶塞德尔像差系数（球差 W040、慧差 W131、像散 W222、"
+                "场曲 W220、畸变 W311，单位 λ）以及轴向色差 (mm) 和横向色差。"
+                "通过 dominant_aberration 字段可知哪种像差主导，从而指导优化策略。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_distortion",
+            "description": (
+                "获取多个归一化视场高度处的几何畸变 (%) 数据。"
+                "目视系统要求 < 5%；显微镜系统通常要求 < 1%；测量仪器要求 < 0.1%。"
+                "返回最大畸变值和逐视场采样表。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "num_points": {
+                        "type": "integer",
+                        "description": "沿视场方向采样点数量 (3-11)，默认 5",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_mtf",
+            "description": (
+                "获取指定空间频率 (cycles/mm) 处各视场的 MTF 值（切向 T / 弧矢 S），"
+                "并与理论衍射极限 MTF 比较。"
+                "衍射截止频率 = 2×NA/λ_primary；超出截止频率则 MTF 理论为 0。"
+                "建议在衍射截止频率的 0.5 倍处检查 MTF 以判断是否达到衍射极限。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "frequency": {
+                        "type": "number",
+                        "description": "空间频率 (cycles/mm，线对/毫米)",
+                    },
+                    "wave": {
+                        "type": "integer",
+                        "description": "波长编号 (1-N)；0 = 多色综合 (默认)",
+                    },
+                },
+                "required": ["frequency"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_mtf_curve",
+            "description": (
+                "在多个空间频率点（0 到截止频率之间均匀采样）计算 MTF，返回完整曲线数据，"
+                "同时给出衍射极限 MTF 曲线用于对比。"
+                "比单次 get_mtf 调用更全面，适合验收阶段评估系统传递函数曲线整体形状。"
+                "返回：各频率点各视场 T/S MTF，以及衍射极限理论值列表。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "num_points": {
+                        "type": "integer",
+                        "description": "频率采样点数量 (3-10)，默认 5",
+                    },
+                    "max_frequency": {
+                        "type": "number",
+                        "description": "最大频率上限 (cycles/mm)；0 = 自动取衍射截止频率",
+                    },
+                    "wave": {
+                        "type": "integer",
+                        "description": "波长编号 (1-N)；0 = 多色综合 (默认)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_manufacturability",
+            "description": (
+                "对当前光学系统进行可制造性检查，输出每个透镜元件的加工关键指标：\n"
+                "• 中心厚度（CT）和边缘厚度（ET）\n"
+                "• CT/ET 比值（极端比值难以加工）\n"
+                "• 透镜弯曲因子 B = (R2+R1)/(R2-R1)（极端弯月形）\n"
+                "• 最小曲率半径是否可抛光（< 3mm 视为危险）\n"
+                "• 最大半口径与中心厚度之比（纤薄透镜风险）\n"
+                "对每个问题项给出具体警告，并给出综合评分 pass/warn/fail。\n"
+                "建议在每次优化结束后调用，防止优化器造出无法加工的镜片。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 
@@ -1269,6 +1398,1052 @@ class ZemaxToolkit:
             indent=2,
         )
 
+    # ---- 成像质量分析 ----
+
+    def get_image_quality(self, wave: int = 0) -> str:
+        """各视场 RMS 弥散斑半径、RMS 波前误差，并判断是否达到衍射极限。
+
+        使用临时 MFE 操作数读取数值 (不修改现有评价函数)。
+
+        操作数说明：
+          RSCE(surf=last, wave=w, hx=0, hy=Hn, px=0, py=0) → RMS 弥散斑半径 (μm，质心参考)
+          RWCE(surf=last, wave=w, hx=0, hy=Hn, px=0, py=0) → RMS 波前误差 (waves，质心参考)
+          ISNA → 像方 NA（用于艾里斑计算）
+        """
+        mfe = self.conn.mfe
+        sys_data = self.conn.system_data
+        lde = self.conn.lde
+
+        # 读取系统参数
+        num_fields = sys_data.Fields.NumberOfFields
+        num_waves = sys_data.Wavelengths.NumberOfWavelengths
+        last_surf = lde.NumberOfSurfaces - 1  # 像面索引
+
+        # 主波长（取中间波长）
+        primary_wave_idx = (num_waves + 1) // 2  # e.g. 3波长 → index 2
+        primary_wave_um = None
+        try:
+            w_obj = sys_data.Wavelengths.GetWavelength(primary_wave_idx)
+            primary_wave_um, _ = self.conn.get_wavelength_data(w_obj)
+        except Exception:
+            primary_wave_um = 0.5876  # 默认 d 线
+
+        wave_param = wave  # 0=多色, 1..N=单色
+
+        # 检测镜头单位并计算 RSCE→μm 换算因子
+        # RSCE 操作数返回值的单位与镜头单位一致 (mm→需乘1000, cm→10000, etc.)
+        # ScaleToUnits enum: Millimeters=0, Centimeters=1, Inches=2, Meters=3
+        lens_unit_to_um = 1000.0  # 默认 mm
+        try:
+            units_obj = _safe(sys_data, "Units", None)
+            if units_obj is not None:
+                lu = _safe(units_obj, "LensUnits", None)
+                if lu == 0:   lens_unit_to_um = 1000.0   # mm → μm
+                elif lu == 1: lens_unit_to_um = 10000.0  # cm → μm
+                elif lu == 2: lens_unit_to_um = 25400.0  # inches → μm
+                elif lu == 3: lens_unit_to_um = 1e6      # m → μm
+        except Exception:
+            pass
+
+        # --- 逐视场添加临时操作数 ---
+        added = []  # (field_idx, op_name, row_num)
+
+        def _add_tmp(op_name, int_params: dict):
+            """在 MFE 末尾添加临时操作数，返回行号或 None。"""
+            type_val = _resolve_operand_type(op_name)
+            if type_val is None:
+                return None
+            pos = _safe(mfe, "NumberOfOperands", 0) + 1
+            row = None
+            try:
+                row = mfe.InsertNewOperandAt(pos)
+            except Exception:
+                try:
+                    row = mfe.AddOperand()
+                except Exception:
+                    return None
+            if row is None:
+                return None
+            _set_row_operand_type(row, type_val)
+            _safe_set_attr(row, "Weight", 0.0)
+            _safe_set_attr(row, "Target", 0.0)
+            # 整数参数: Param1=surf, Param2=wave, Param3=field(对于场相关操作数)
+            for pnum, pval in int_params.items():
+                _set_operand_int_param(row, pnum, pval)
+            return _safe(mfe, "NumberOfOperands", 0)
+
+        # ISNA
+        isna_row = _add_tmp("ISNA", {})
+        added.append(("ISNA", isna_row))
+
+        # RSCE / RWCE per field
+        # RSCE: Param1=surf, Param2=wave; 视场通过 Hx/Hy 指定（用 MFE Cell 设置）
+        # 更简单的方式: 对每个视场，用 Hy=field_norm_y 的方式
+        # ZOS-API MFE RSCE 参数: Int1=surf, Int2=wave, Hx,Hy,Px,Py 在 GetOperandCell
+        # 实际上 Zemax 对 RSCE 的 Hy 是归一化视场高度; 最简单是用 Param3=field_idx
+        # 但不同版本可能不同；保险方式: 使用 Param2=field, Param1=wave 类似 MTFT
+
+        # 使用较通用方式: RSCE(Int1=last_surf, Int2=wave, Hx=0, Hy=Hn)
+        # 通过 GetOperandCell 设置 Hx/Hy/Px/Py
+        def _set_cell(row_obj, col_idx, float_val=None, int_val=None):
+            try:
+                cell = row_obj.GetOperandCell(col_idx)
+                if cell is None:
+                    return
+                if float_val is not None:
+                    try:
+                        cell.DoubleValue = float_val
+                    except Exception:
+                        try:
+                            cell.Value = float_val
+                        except Exception:
+                            pass
+                if int_val is not None:
+                    try:
+                        cell.IntegerValue = int_val
+                    except Exception:
+                        try:
+                            cell.Value = int_val
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # RSCE / RWCE col layout (0-indexed from GetOperandCell):
+        # col 1 = Type, col 2 = Int1(surf), col 3 = Int2(wave),
+        # col 4 = Hx, col 5 = Hy, col 6 = Px, col 7 = Py
+        rsce_rows = []
+        rwce_rows = []
+        for fi in range(1, num_fields + 1):
+            f_obj = sys_data.Fields.GetField(fi)
+            _, fy, _ = self.conn.get_field_data(f_obj)
+            # 归一化视场高度 (假设最大视场 = 1)
+            max_fy = 1.0
+            try:
+                fm = sys_data.Fields.GetField(num_fields)
+                _, max_fy_raw, _ = self.conn.get_field_data(fm)
+                if max_fy_raw and max_fy_raw != 0:
+                    max_fy = abs(max_fy_raw)
+            except Exception:
+                pass
+            hy_norm = (fy / max_fy) if max_fy != 0 else 0.0
+
+            # RSCE row
+            type_val_rsce = _resolve_operand_type("RSCE")
+            if type_val_rsce is not None:
+                pos = _safe(mfe, "NumberOfOperands", 0) + 1
+                row = None
+                try:
+                    row = mfe.InsertNewOperandAt(pos)
+                except Exception:
+                    try:
+                        row = mfe.AddOperand()
+                    except Exception:
+                        pass
+                if row is not None:
+                    _set_row_operand_type(row, type_val_rsce)
+                    # ChangeType 后重新获取引用，防止旧引用失效
+                    row = _refetch_last_row(mfe) or row
+                    _safe_set_attr(row, "Weight", 0.0)
+                    _safe_set_attr(row, "Target", 0.0)
+                    _set_operand_int_param(row, 1, last_surf)   # Param1=surf
+                    _set_operand_int_param(row, 2, wave_param)  # Param2=wave
+                    # Hx=Param3(col4)=0, Hy=Param4(col5)=hy_norm
+                    _set_operand_double_param(row, 3, 0.0)           # Hx
+                    _set_operand_double_param(row, 4, float(hy_norm)) # Hy
+                    rsce_rows.append((fi, fy, _safe(mfe, "NumberOfOperands", 0)))
+
+            # RWCE row
+            type_val_rwce = _resolve_operand_type("RWCE")
+            if type_val_rwce is not None:
+                pos = _safe(mfe, "NumberOfOperands", 0) + 1
+                row = None
+                try:
+                    row = mfe.InsertNewOperandAt(pos)
+                except Exception:
+                    try:
+                        row = mfe.AddOperand()
+                    except Exception:
+                        pass
+                if row is not None:
+                    _set_row_operand_type(row, type_val_rwce)
+                    row = _refetch_last_row(mfe) or row
+                    _safe_set_attr(row, "Weight", 0.0)
+                    _safe_set_attr(row, "Target", 0.0)
+                    _set_operand_int_param(row, 1, last_surf)   # Param1=surf
+                    _set_operand_int_param(row, 2, wave_param)  # Param2=wave
+                    # Hx=Param3(col4)=0, Hy=Param4(col5)=hy_norm
+                    _set_operand_double_param(row, 3, 0.0)           # Hx
+                    _set_operand_double_param(row, 4, float(hy_norm)) # Hy
+                    rwce_rows.append((fi, fy, _safe(mfe, "NumberOfOperands", 0)))
+
+        # --- 计算 ---
+        try:
+            mfe.CalculateMeritFunction()
+        except Exception:
+            pass
+
+        # --- 读取 ISNA ---
+        image_na = None
+        if isna_row is not None:
+            try:
+                image_na = _safe(mfe.GetOperandAt(isna_row), "Value", None)
+            except Exception:
+                pass
+
+        # 艾里斑半径 = 1.22 * λ / (2 * NA_image)，单位 μm
+        # λ 已是 μm，结果直接是 μm，不需要再乘 1000
+        airy_radius_um = None
+        if image_na and image_na > 0 and primary_wave_um:
+            airy_radius_um = round(1.22 * primary_wave_um / (2 * image_na), 4)
+
+        # Marechal 准则: 衍射极限阈值 = λ/14 (in waves)
+        marechal_threshold = 1 / 14.0  # ≈ 0.0714 waves
+
+        # --- 读取 RSCE / RWCE ---
+        fields_data = []
+        rsce_dict = {}
+        for fi, fy, rnum in rsce_rows:
+            try:
+                val = _safe(mfe.GetOperandAt(rnum), "Value", None)
+                rsce_dict[fi] = val
+            except Exception:
+                rsce_dict[fi] = None
+
+        rwce_dict = {}
+        for fi, fy, rnum in rwce_rows:
+            try:
+                val = _safe(mfe.GetOperandAt(rnum), "Value", None)
+                rwce_dict[fi] = val
+            except Exception:
+                rwce_dict[fi] = None
+
+        for fi in range(1, num_fields + 1):
+            f_obj = sys_data.Fields.GetField(fi)
+            _, fy, _ = self.conn.get_field_data(f_obj)
+            rms_spot_raw = rsce_dict.get(fi)  # 镜头单位 (mm)
+            rms_spot = (rms_spot_raw * lens_unit_to_um) if rms_spot_raw is not None else None  # → μm
+            rms_wfe = rwce_dict.get(fi)
+            diffraction_limited = None
+            if rms_wfe is not None:
+                diffraction_limited = bool(rms_wfe < marechal_threshold)
+            entry = {
+                "field": fi,
+                "field_y": fy,
+                "rms_spot_um": round(rms_spot, 2) if rms_spot is not None else None,
+                "rms_wavefront_waves": round(rms_wfe, 5) if rms_wfe is not None else None,
+                "diffraction_limited": diffraction_limited,
+            }
+            if airy_radius_um is not None and rms_spot is not None:
+                entry["vs_airy"] = round(rms_spot / airy_radius_um, 3)
+            fields_data.append(entry)
+
+        # --- 清除所有临时操作数 (逆序) ---
+        all_tmp_rows = (
+            [isna_row] if isna_row else []
+        ) + [r for _, _, r in rsce_rows] + [r for _, _, r in rwce_rows]
+        for rnum in sorted(set(all_tmp_rows), reverse=True):
+            try:
+                mfe.DeleteOperandAt(rnum)
+            except Exception:
+                try:
+                    mfe.RemoveOperandAt(rnum)
+                except Exception:
+                    pass
+
+        result = {
+            "primary_wavelength_um": primary_wave_um,
+            "image_na": image_na,
+            "airy_radius_um": airy_radius_um,
+            "marechal_threshold_waves": round(marechal_threshold, 4),
+            "fields": fields_data,
+        }
+
+        # 汇总
+        rms_spots = [f["rms_spot_um"] for f in fields_data if f["rms_spot_um"] is not None]
+        if rms_spots:
+            result["max_rms_spot_um"] = round(max(rms_spots), 4)
+            result["all_diffraction_limited"] = all(
+                f.get("diffraction_limited", False) for f in fields_data
+                if f.get("diffraction_limited") is not None
+            )
+
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def get_aberrations(self) -> str:
+        """获取三阶 Seidel 像差系数和色差 (临时 MFE 操作数方式)。
+
+        操作数:
+          SPHA → 三阶球差系数 W040 (waves)
+          COMA → 三阶慧差 W131 (waves)
+          ASTI → 三阶像散 W222 (waves)
+          FCUR → 三阶场曲 W220 (waves)
+          DIST → 三阶畸变 W311 (waves)
+          AXCL → 轴向色差 (mm)
+          LACL → 横向色差 (μm)
+
+        所有操作数 Int1=0 表示对整个系统求和。
+        """
+        mfe = self.conn.mfe
+
+        seidel_ops = [
+            ("SPHA", "三阶球差 W040 (waves)"),
+            ("COMA", "三阶慧差 W131 (waves)"),
+            ("ASTI", "三阶像散 W222 (waves)"),
+            ("FCUR", "三阶场曲 W220 (waves)"),
+            ("DIST", "三阶畸变 W311 (waves)"),
+            ("AXCL", "轴向色差 (mm)"),
+            ("LACL", "横向色差 (μm)"),
+        ]
+
+        added = []
+        for op_name, _ in seidel_ops:
+            type_val = _resolve_operand_type(op_name)
+            if type_val is None:
+                continue
+            pos = _safe(mfe, "NumberOfOperands", 0) + 1
+            row = None
+            try:
+                row = mfe.InsertNewOperandAt(pos)
+            except Exception:
+                try:
+                    row = mfe.AddOperand()
+                except Exception:
+                    continue
+            if row is None:
+                continue
+            _set_row_operand_type(row, type_val)
+            _safe_set_attr(row, "Weight", 0.0)
+            _safe_set_attr(row, "Target", 0.0)
+            _set_operand_int_param(row, 1, 0)  # surf=0: 全系统
+            added.append((op_name, _safe(mfe, "NumberOfOperands", 0)))
+
+        try:
+            mfe.CalculateMeritFunction()
+        except Exception:
+            pass
+
+        data = {}
+        for op_name, rnum in added:
+            try:
+                data[op_name] = _safe(mfe.GetOperandAt(rnum), "Value", None)
+            except Exception:
+                data[op_name] = None
+
+        # 清除
+        for _, rnum in sorted(added, key=lambda x: x[1], reverse=True):
+            try:
+                mfe.DeleteOperandAt(rnum)
+            except Exception:
+                try:
+                    mfe.RemoveOperandAt(rnum)
+                except Exception:
+                    pass
+
+        # 构造结果
+        aberrations = {}
+        for op_name, label in seidel_ops:
+            aberrations[op_name] = {
+                "label": label,
+                "value": round(data[op_name], 6) if data.get(op_name) is not None else None,
+            }
+
+        # 判断主导像差 (取绝对值最大的 Seidel 项)
+        seidel_keys = ["SPHA", "COMA", "ASTI", "FCUR", "DIST"]
+        dominant = None
+        max_abs = 0.0
+        for k in seidel_keys:
+            v = data.get(k)
+            if v is not None and abs(v) > max_abs:
+                max_abs = abs(v)
+                dominant = k
+
+        result = {
+            "aberrations": aberrations,
+            "dominant_aberration": dominant,
+            "dominant_value": round(max_abs, 6) if dominant else None,
+            "tip": {
+                "SPHA": "球差主导 → 检查正负透镜曲率分配，或释放更多曲率变量",
+                "COMA": "慧差主导 → 检查孔径光阑位置，或调整弯月形状",
+                "ASTI": "像散主导 → 调整透镜间距或视场采样",
+                "FCUR": "场曲主导 → 引入平场元件或反向弯月透镜",
+                "DIST": "畸变主导 → 对称结构可自消畸变，或在 MFE 加 DIST 约束",
+            }.get(dominant, ""),
+        }
+
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def get_distortion(self, num_points: int = 5) -> str:
+        """获取多视场归一化高度处的几何畸变 (%)。
+
+        使用 MFE 操作数 DISC (distortion percentage):
+          DISC(Int1=field, Int2=wave) → 该视场畸变百分比
+        若 DISC 不可用，回退到 DIST (rays) 计算。
+        """
+        mfe = self.conn.mfe
+        sys_data = self.conn.system_data
+        num_fields = sys_data.Fields.NumberOfFields
+        num_waves = sys_data.Wavelengths.NumberOfWavelengths
+        primary_wave_idx = (num_waves + 1) // 2
+
+        num_points = max(3, min(11, num_points))
+
+        # 尝试 DISC 操作数
+        type_val_disc = _resolve_operand_type("DISC")
+        type_val_dimx = _resolve_operand_type("DIMX")  # 最大畸变
+
+        added = []
+
+        if type_val_disc is not None:
+            # 按均匀归一化视场高度采样
+            for fi in range(1, num_points + 1):
+                # 将采样视场映射到实际视场编号范围
+                field_idx = max(1, min(num_fields, round(1 + (fi - 1) * (num_fields - 1) / max(1, num_points - 1))))
+                pos = _safe(mfe, "NumberOfOperands", 0) + 1
+                row = None
+                try:
+                    row = mfe.InsertNewOperandAt(pos)
+                except Exception:
+                    try:
+                        row = mfe.AddOperand()
+                    except Exception:
+                        continue
+                if row is None:
+                    continue
+                _set_row_operand_type(row, type_val_disc)
+                # ChangeType 后重新获取引用
+                row = _refetch_last_row(mfe) or row
+                _safe_set_attr(row, "Weight", 0.0)
+                # DISC: col2(Int1)=wave 被Zemax强制为0, col3(Int2)=field number!
+                # 经诊断: col4(Hx)=Integer类型+无法写, col5(Hy)=DoubleValue read_back=inf(失败)
+                # 结论: DISC 通过 col3(Int2)=field_idx 指定视场
+                # col3 write 已确认有效(read_back=field_idx ✓)
+                try:
+                    _dc3 = row.GetOperandCell(3)
+                    if _dc3 is not None:
+                        _dc3.IntegerValue = field_idx
+                except Exception:
+                    pass
+                added.append(("DISC", field_idx, _safe(mfe, "NumberOfOperands", 0)))
+
+        # DIMX (最大畸变，wave=primary)
+        dimx_row = None
+        if type_val_dimx is not None:
+            pos = _safe(mfe, "NumberOfOperands", 0) + 1
+            row = None
+            try:
+                row = mfe.InsertNewOperandAt(pos)
+            except Exception:
+                try:
+                    row = mfe.AddOperand()
+                except Exception:
+                    pass
+            if row is not None:
+                _set_row_operand_type(row, type_val_dimx)
+                row = _refetch_last_row(mfe) or row
+                _safe_set_attr(row, "Weight", 0.0)
+                _set_operand_int_param(row, 1, primary_wave_idx)
+                dimx_row = _safe(mfe, "NumberOfOperands", 0)
+
+        try:
+            mfe.CalculateMeritFunction()
+        except Exception:
+            pass
+
+        # 读取 DISC
+        samples = []
+        seen_fields = set()
+        for op_name, field_idx, rnum in added:
+            if field_idx in seen_fields:
+                continue
+            seen_fields.add(field_idx)
+            val = None
+            try:
+                val = _safe(mfe.GetOperandAt(rnum), "Value", None)
+            except Exception:
+                pass
+            # 获取该视场的实际坐标
+            f_obj = sys_data.Fields.GetField(field_idx)
+            _, fy, _ = self.conn.get_field_data(f_obj)
+            samples.append({
+                "field": field_idx,
+                "field_y": fy,
+                "distortion_pct": round(val, 5) if val is not None else None,
+            })
+
+        dimx_val = None
+        if dimx_row is not None:
+            try:
+                dimx_val = _safe(mfe.GetOperandAt(dimx_row), "Value", None)
+            except Exception:
+                pass
+
+        # 清除
+        all_rows = [r for _, _, r in added] + ([dimx_row] if dimx_row else [])
+        for rnum in sorted(set(all_rows), reverse=True):
+            try:
+                mfe.DeleteOperandAt(rnum)
+            except Exception:
+                try:
+                    mfe.RemoveOperandAt(rnum)
+                except Exception:
+                    pass
+
+        abs_vals = [s["distortion_pct"] for s in samples if s["distortion_pct"] is not None]
+        max_abs_dist = round(max(abs(v) for v in abs_vals), 5) if abs_vals else None
+
+        result = {
+            "max_distortion_pct": dimx_val if dimx_val is not None else max_abs_dist,
+            "samples": samples,
+            "guidelines": {
+                "visual_instrument": "< 5%",
+                "microscope": "< 1%",
+                "measurement_instrument": "< 0.1%",
+            },
+        }
+
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def get_mtf(self, frequency: float, wave: int = 0) -> str:
+        """获取指定空间频率处各视场的 MTF 值 (切向/弧矢)，并与衍射极限比较。
+
+        操作数:
+          MTFT(Int1=wave, Int2=field, Int3/Param3=freq_in_lp_mm) → 切向 MTF
+          MTHS(Int1=wave, Int2=field, Int3=freq) → 弧矢 MTF
+
+        注意：Zemax 中 MTFT/MTHS 的频率参数单位为 cycles/mm，
+        Param3 通常用 GetOperandCell(col=4) 设置浮点数。
+        """
+        mfe = self.conn.mfe
+        sys_data = self.conn.system_data
+        num_fields = sys_data.Fields.NumberOfFields
+        num_waves = sys_data.Wavelengths.NumberOfWavelengths
+
+        # 主波长
+        primary_wave_idx = (num_waves + 1) // 2
+        primary_wave_um = 0.5876
+        try:
+            w_obj = sys_data.Wavelengths.GetWavelength(primary_wave_idx)
+            primary_wave_um, _ = self.conn.get_wavelength_data(w_obj)
+        except Exception:
+            pass
+
+        wave_param = wave  # 0=多色
+
+        type_val_mtft = _resolve_operand_type("MTFT")
+        type_val_mths = _resolve_operand_type("MTHS")
+
+        if type_val_mtft is None and type_val_mths is None:
+            return json.dumps({"error": "当前 Zemax 版本不支持 MTFT/MTHS 操作数"}, ensure_ascii=False)
+
+        added = []  # (label, field_idx, row_num)
+
+        def _add_mtf_row(type_val, label, field_idx):
+            pos = _safe(mfe, "NumberOfOperands", 0) + 1
+            row = None
+            try:
+                row = mfe.InsertNewOperandAt(pos)
+            except Exception:
+                try:
+                    row = mfe.AddOperand()
+                except Exception:
+                    return
+            if row is None:
+                return
+            _set_row_operand_type(row, type_val)
+            # ChangeType 后重新获取引用
+            row = _refetch_last_row(mfe) or row
+            _safe_set_attr(row, "Weight", 0.0)
+            _safe_set_attr(row, "Target", 0.0)
+            # col2=Int1=wave: Zemax 最小值=1, 0 会被重置为 1
+            _wave_actual = max(1, wave_param) if wave_param > 0 else primary_wave_idx
+            _set_operand_int_param(row, 1, _wave_actual)   # col2=wave
+            _set_operand_int_param(row, 2, field_idx)       # col3=field ✓
+            # col4=Param3=sampling (DataType=Integer, 合法范围 1-5)
+            # col5=Param4=频率 (DataType=Double, 但 DoubleValue read_back=inf → 用 Value string)
+            try:
+                _fc4 = row.GetOperandCell(4)
+                if _fc4 is not None:
+                    _fc4.IntegerValue = 3   # sampling=3 (中等采样)
+            except Exception:
+                pass
+            # 频率写入 col5: 必须用 Value(string)，DoubleValue 会返回 inf (虚假成功)
+            try:
+                _fc5 = row.GetOperandCell(5)
+                if _fc5 is not None:
+                    _fc5.Value = str(float(frequency))
+            except Exception as _e5:
+                # 最后尝试 DoubleValue
+                try:
+                    _fc5b = row.GetOperandCell(5)
+                    if _fc5b is not None:
+                        _fc5b.DoubleValue = float(frequency)
+                except Exception:
+                    pass
+            added.append((label, field_idx, _safe(mfe, "NumberOfOperands", 0)))
+
+        for fi in range(1, num_fields + 1):
+            if type_val_mtft is not None:
+                _add_mtf_row(type_val_mtft, "T", fi)
+            if type_val_mths is not None:
+                _add_mtf_row(type_val_mths, "S", fi)
+
+        try:
+            mfe.CalculateMeritFunction()
+        except Exception:
+            pass
+
+        # 读取
+        raw = {}
+        for label, fi, rnum in added:
+            key = (fi, label)
+            try:
+                raw[key] = _safe(mfe.GetOperandAt(rnum), "Value", None)
+            except Exception:
+                raw[key] = None
+
+        # 清除
+        all_rows = [r for _, _, r in added]
+        for rnum in sorted(set(all_rows), reverse=True):
+            try:
+                mfe.DeleteOperandAt(rnum)
+            except Exception:
+                try:
+                    mfe.RemoveOperandAt(rnum)
+                except Exception:
+                    pass
+
+        # 理论衍射极限 MTF（单色，使用主波长）
+        # 截止频率 f_c = 2*NA / λ (cycles/mm)
+        image_na = None
+        try:
+            type_val_isna = _resolve_operand_type("ISNA")
+            if type_val_isna is not None:
+                pos = _safe(mfe, "NumberOfOperands", 0) + 1
+                row = None
+                try:
+                    row = mfe.InsertNewOperandAt(pos)
+                except Exception:
+                    try:
+                        row = mfe.AddOperand()
+                    except Exception:
+                        pass
+                if row is not None:
+                    _set_row_operand_type(row, type_val_isna)
+                    _safe_set_attr(row, "Weight", 0.0)
+                    mfe.CalculateMeritFunction()
+                    isna_rnum = _safe(mfe, "NumberOfOperands", 0)
+                    image_na = _safe(mfe.GetOperandAt(isna_rnum), "Value", None)
+                    try:
+                        mfe.DeleteOperandAt(isna_rnum)
+                    except Exception:
+                        try:
+                            mfe.RemoveOperandAt(isna_rnum)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        cutoff_freq = None
+        diffraction_limit_mtf = None
+        if image_na and image_na > 0 and primary_wave_um:
+            cutoff_freq = round(2 * image_na / (primary_wave_um * 1e-3), 1)  # λ in mm
+            # 圆孔 OTF: MTF = (2/π) * [arccos(s) - s*sqrt(1-s²)], s = f/f_c
+            s = frequency / cutoff_freq if cutoff_freq > 0 else 1.0
+            if s >= 1.0:
+                diffraction_limit_mtf = 0.0
+            else:
+                import math
+                diffraction_limit_mtf = round((2 / math.pi) * (math.acos(s) - s * math.sqrt(1 - s ** 2)), 4)
+
+        # 组装输出
+        fields_data = []
+        for fi in range(1, num_fields + 1):
+            f_obj = sys_data.Fields.GetField(fi)
+            _, fy, _ = self.conn.get_field_data(f_obj)
+            entry = {
+                "field": fi,
+                "field_y": fy,
+                "mtf_tangential": round(raw.get((fi, "T"), None) or 0, 4) if raw.get((fi, "T")) is not None else None,
+                "mtf_sagittal": round(raw.get((fi, "S"), None) or 0, 4) if raw.get((fi, "S")) is not None else None,
+            }
+            if diffraction_limit_mtf is not None:
+                entry["vs_diffraction_limit"] = {
+                    "T": round(entry["mtf_tangential"] / diffraction_limit_mtf, 3) if entry["mtf_tangential"] is not None and diffraction_limit_mtf > 0 else None,
+                    "S": round(entry["mtf_sagittal"] / diffraction_limit_mtf, 3) if entry["mtf_sagittal"] is not None and diffraction_limit_mtf > 0 else None,
+                }
+            fields_data.append(entry)
+
+        result = {
+            "frequency_cycles_per_mm": frequency,
+            "image_na": image_na,
+            "cutoff_frequency": cutoff_freq,
+            "diffraction_limit_mtf": diffraction_limit_mtf,
+            "fields": fields_data,
+        }
+
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def get_mtf_curve(self, num_points: int = 5, max_frequency: float = 0, wave: int = 0) -> str:
+        """在多个空间频率点计算 MTF，返回完整曲线数据以及衍射极限理论曲线用于对比。"""
+        import math
+        mfe = self.conn.mfe
+        sys_data = self.conn.system_data
+        num_fields = sys_data.Fields.NumberOfFields
+        num_waves = sys_data.Wavelengths.NumberOfWavelengths
+
+        primary_wave_idx = (num_waves + 1) // 2
+        primary_wave_um = 0.5876
+        try:
+            w_obj = sys_data.Wavelengths.GetWavelength(primary_wave_idx)
+            primary_wave_um, _ = self.conn.get_wavelength_data(w_obj)
+        except Exception:
+            pass
+
+        # 先获取 ISNA 以确定截止频率
+        image_na = None
+        type_val_isna = _resolve_operand_type("ISNA")
+        if type_val_isna is not None:
+            pos = _safe(mfe, "NumberOfOperands", 0) + 1
+            row = None
+            try:
+                row = mfe.InsertNewOperandAt(pos)
+            except Exception:
+                try:
+                    row = mfe.AddOperand()
+                except Exception:
+                    pass
+            if row is not None:
+                _set_row_operand_type(row, type_val_isna)
+                _safe_set_attr(row, "Weight", 0.0)
+                mfe.CalculateMeritFunction()
+                isna_rnum = _safe(mfe, "NumberOfOperands", 0)
+                image_na = _safe(mfe.GetOperandAt(isna_rnum), "Value", None)
+                try:
+                    mfe.DeleteOperandAt(isna_rnum)
+                except Exception:
+                    try:
+                        mfe.RemoveOperandAt(isna_rnum)
+                    except Exception:
+                        pass
+
+        cutoff_freq = None
+        if image_na and image_na > 0 and primary_wave_um:
+            cutoff_freq = round(2 * image_na / (primary_wave_um * 1e-3), 1)
+
+        # 确定频率范围
+        num_points = max(3, min(10, num_points))
+        if max_frequency <= 0:
+            if cutoff_freq:
+                max_frequency = cutoff_freq
+            else:
+                max_frequency = 100.0
+        frequencies = [round(max_frequency * i / (num_points - 1), 2) for i in range(1, num_points)]
+        # 首点从 1/num_points 开始，避免 0 频率无意义
+        # 末点取截止频率 * 0.95（或 max_frequency）
+        if cutoff_freq and max_frequency >= cutoff_freq:
+            frequencies[-1] = round(cutoff_freq * 0.95, 2)
+
+        type_val_mtft = _resolve_operand_type("MTFT")
+        type_val_mths = _resolve_operand_type("MTHS")
+
+        if type_val_mtft is None and type_val_mths is None:
+            return json.dumps({"error": "当前 Zemax 版本不支持 MTFT/MTHS 操作数"}, ensure_ascii=False)
+
+        wave_param = max(1, wave) if wave > 0 else primary_wave_idx
+
+        # 逐频率点调用 get_mtf 逻辑（重用核心逻辑，避免代码重复）
+        curve_data = []
+        for freq in frequencies:
+            # 衍射极限理论值
+            dl_mtf = None
+            if cutoff_freq and cutoff_freq > 0:
+                s = freq / cutoff_freq
+                if s >= 1.0:
+                    dl_mtf = 0.0
+                else:
+                    dl_mtf = round((2 / math.pi) * (math.acos(s) - s * math.sqrt(1 - s ** 2)), 4)
+
+            # 添加每个视场的 MTFT + MTHS
+            added = []
+
+            def _add_row(type_val, label, fi):
+                pos = _safe(mfe, "NumberOfOperands", 0) + 1
+                row = None
+                try:
+                    row = mfe.InsertNewOperandAt(pos)
+                except Exception:
+                    try:
+                        row = mfe.AddOperand()
+                    except Exception:
+                        return
+                if row is None:
+                    return
+                _set_row_operand_type(row, type_val)
+                row = _refetch_last_row(mfe) or row
+                _safe_set_attr(row, "Weight", 0.0)
+                _safe_set_attr(row, "Target", 0.0)
+                _set_operand_int_param(row, 1, wave_param)
+                _set_operand_int_param(row, 2, fi)
+                try:
+                    _fc4 = row.GetOperandCell(4)
+                    if _fc4 is not None:
+                        _fc4.IntegerValue = 3
+                except Exception:
+                    pass
+                try:
+                    _fc5 = row.GetOperandCell(5)
+                    if _fc5 is not None:
+                        _fc5.Value = str(float(freq))
+                except Exception:
+                    pass
+                added.append((label, fi, _safe(mfe, "NumberOfOperands", 0)))
+
+            for fi in range(1, num_fields + 1):
+                if type_val_mtft is not None:
+                    _add_row(type_val_mtft, "T", fi)
+                if type_val_mths is not None:
+                    _add_row(type_val_mths, "S", fi)
+
+            try:
+                mfe.CalculateMeritFunction()
+            except Exception:
+                pass
+
+            raw = {}
+            for label, fi, rnum in added:
+                try:
+                    raw[(fi, label)] = _safe(mfe.GetOperandAt(rnum), "Value", None)
+                except Exception:
+                    raw[(fi, label)] = None
+
+            all_rows = [r for _, _, r in added]
+            for rnum in sorted(set(all_rows), reverse=True):
+                try:
+                    mfe.DeleteOperandAt(rnum)
+                except Exception:
+                    try:
+                        mfe.RemoveOperandAt(rnum)
+                    except Exception:
+                        pass
+
+            fields_at_freq = []
+            for fi in range(1, num_fields + 1):
+                f_obj = sys_data.Fields.GetField(fi)
+                _, fy, _ = self.conn.get_field_data(f_obj)
+                entry = {
+                    "field": fi,
+                    "field_y": fy,
+                    "T": round(raw.get((fi, "T")) or 0, 4) if raw.get((fi, "T")) is not None else None,
+                    "S": round(raw.get((fi, "S")) or 0, 4) if raw.get((fi, "S")) is not None else None,
+                }
+                if dl_mtf is not None and dl_mtf > 0:
+                    entry["T_vs_DL"] = round((entry["T"] or 0) / dl_mtf, 3)
+                    entry["S_vs_DL"] = round((entry["S"] or 0) / dl_mtf, 3)
+                fields_at_freq.append(entry)
+
+            curve_data.append({
+                "frequency": freq,
+                "diffraction_limit": dl_mtf,
+                "fields": fields_at_freq,
+            })
+
+        # 汇总：找出最差视场（全频率平均 T/S 最低）
+        worst_field = None
+        min_avg = 1.0
+        for fi in range(1, num_fields + 1):
+            vals = []
+            for pt in curve_data:
+                for fe in pt["fields"]:
+                    if fe["field"] == fi:
+                        if fe["T"] is not None:
+                            vals.append(fe["T"])
+                        if fe["S"] is not None:
+                            vals.append(fe["S"])
+            if vals:
+                avg = sum(vals) / len(vals)
+                if avg < min_avg:
+                    min_avg = avg
+                    worst_field = fi
+
+        result = {
+            "image_na": image_na,
+            "cutoff_frequency": cutoff_freq,
+            "primary_wavelength_um": primary_wave_um,
+            "num_fields": num_fields,
+            "worst_field": worst_field,
+            "curve": curve_data,
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def check_manufacturability(self) -> str:
+        """对当前系统每个透镜进行可制造性检查：边缘厚度、CT/ET比值、弯曲因子、最小曲率半径等。"""
+        import math
+        lde = self.conn.lde
+        num_surfs = lde.NumberOfSurfaces  # 包含物面(0)和像面(last)
+        last_surf = num_surfs - 1
+
+        # 读取所有表面数据
+        surfaces = []
+        for i in range(num_surfs):
+            s = lde.GetSurfaceAt(i)
+            r = _safe(s, "Radius", 1e18)
+            t = _safe(s, "Thickness", 0.0)
+            mat = _safe(s, "Material", "") or ""
+            sd = _safe(s, "SemiDiameter", 0.0) or 0.0
+            surfaces.append({
+                "surf": i,
+                "radius": r if r is not None else 1e18,
+                "thickness": t if t is not None else 0.0,
+                "material": mat.strip(),
+                "semi_diameter": abs(sd),
+            })
+
+        # 识别透镜元件：连续材料非空表面组
+        # 一个透镜组 = 从第一个有材料的面到该组最后一个面（材料变为空气）
+        lenses = []
+        i = 1  # 跳过物面
+        while i < last_surf:
+            s = surfaces[i]
+            if s["material"] and s["material"].upper() not in ("", "MIRROR"):
+                # 开始一个透镜元件（可能是胶合组）
+                group_surfs = [i]
+                j = i + 1
+                while j < last_surf and surfaces[j]["material"] and surfaces[j]["material"].upper() not in ("", "MIRROR"):
+                    group_surfs.append(j)
+                    j += 1
+                # 最后一个表面是出射面（无材料）
+                exit_surf = j if j < last_surf else j
+                group_surfs.append(exit_surf)  # 出射面
+                lenses.append(group_surfs)
+                i = j + 1
+            else:
+                i += 1
+
+        warnings = []
+        elements = []
+
+        for group in lenses:
+            entry_surf_idx = group[0]
+            exit_surf_idx = group[-1]
+            entry = surfaces[entry_surf_idx]
+            exit_ = surfaces[exit_surf_idx]
+
+            R1 = entry["radius"]
+            R2 = exit_["radius"]
+            # 半口径取组内最大
+            sd = max(surfaces[k]["semi_diameter"] for k in group)
+            if sd == 0:
+                sd = 1.0
+
+            # 中心厚度 = 组内所有材料面的厚度之和
+            ct = sum(surfaces[k]["thickness"] for k in group[:-1])
+
+            # sag 计算：sag = R - sqrt(R² - h²)，h = semi_diameter
+            def sag(R, h):
+                if abs(R) > 1e15:  # 平面
+                    return 0.0
+                R2_minus_h2 = R ** 2 - h ** 2
+                if R2_minus_h2 < 0:
+                    return abs(R)  # 超出边缘（非物理），保守估计
+                return R - math.copysign(math.sqrt(R2_minus_h2), R)
+
+            sag1 = sag(R1, sd)
+            sag2 = sag(R2, sd)
+            # ET = CT - sag(入射面) + sag(出射面)
+            # 注意符号：Zemax 定义下入射面正 sag 使边缘变薄，出射面正 sag 使边缘变厚
+            et = ct - sag1 + sag2
+
+            # 弯曲因子 B = (R2+R1)/(R2-R1)，平面令 R=∞→1e18
+            R1_eff = R1 if abs(R1) < 1e15 else 1e18
+            R2_eff = R2 if abs(R2) < 1e15 else 1e18
+            try:
+                B = (R2_eff + R1_eff) / (R2_eff - R1_eff) if abs(R2_eff - R1_eff) > 1e-6 else 999.0
+            except Exception:
+                B = None
+
+            # 最小有效曲率半径
+            min_r = min(
+                (abs(surfaces[k]["radius"]) for k in group if abs(surfaces[k]["radius"]) < 1e15),
+                default=None
+            )
+
+            # CT/ET 比值
+            ct_et_ratio = round(ct / et, 3) if et != 0 else None
+            # 半口径/CT 比（细长比）
+            sd_ct_ratio = round(sd / ct, 3) if ct > 0 else None
+
+            issues = []
+            severity = "pass"
+
+            if et < 0.3:
+                issues.append(f"⚠️ 边缘厚度 ET={et:.3f}mm < 0.3mm，极薄无法加工")
+                severity = "fail"
+            elif et < 1.0:
+                issues.append(f"⚠️ 边缘厚度 ET={et:.3f}mm < 1.0mm，装配风险")
+                if severity != "fail":
+                    severity = "warn"
+
+            if ct < 1.0:
+                issues.append(f"⚠️ 中心厚度 CT={ct:.3f}mm < 1.0mm，过薄")
+                if severity != "fail":
+                    severity = "warn"
+
+            if ct_et_ratio is not None and ct_et_ratio > 10:
+                issues.append(f"⚠️ CT/ET={ct_et_ratio:.1f}，正透镜边缘过薄，镀膜困难")
+                if severity != "fail":
+                    severity = "warn"
+            if ct_et_ratio is not None and ct_et_ratio < 0.1:
+                issues.append(f"⚠️ CT/ET={ct_et_ratio:.3f}，负透镜中心过薄")
+                if severity != "fail":
+                    severity = "warn"
+
+            if min_r is not None and min_r < 3.0:
+                issues.append(f"⚠️ 最小曲率半径 R={min_r:.2f}mm < 3mm，难以抛光")
+                if severity != "fail":
+                    severity = "warn"
+
+            if sd_ct_ratio is not None and sd_ct_ratio > 8:
+                issues.append(f"⚠️ 半口径/CT={sd_ct_ratio:.1f}，透镜过于扁平，加工变形风险")
+                if severity != "fail":
+                    severity = "warn"
+
+            if B is not None and abs(B) > 5:
+                issues.append(f"⚠️ 弯曲因子 B={B:.2f}，极端弯月形，慧差校正困难")
+                if severity != "fail":
+                    severity = "warn"
+
+            element = {
+                "surfs": group,
+                "R1": round(R1, 4) if abs(R1) < 1e15 else "∞",
+                "R2": round(R2, 4) if abs(R2) < 1e15 else "∞",
+                "center_thickness_mm": round(ct, 4),
+                "edge_thickness_mm": round(et, 4),
+                "semi_diameter_mm": round(sd, 4),
+                "ct_et_ratio": ct_et_ratio,
+                "sd_ct_ratio": sd_ct_ratio,
+                "bend_factor_B": round(B, 3) if B is not None else None,
+                "min_radius_mm": round(min_r, 4) if min_r is not None else None,
+                "severity": severity,
+                "issues": issues,
+            }
+            elements.append(element)
+            warnings.extend(issues)
+
+        overall = "pass"
+        if any(e["severity"] == "fail" for e in elements):
+            overall = "fail"
+        elif any(e["severity"] == "warn" for e in elements):
+            overall = "warn"
+
+        result = {
+            "overall": overall,
+            "num_elements": len(elements),
+            "elements": elements,
+            "summary": warnings if warnings else ["✅ 所有透镜元件通过可制造性检查"],
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
     # ---- 玻璃库管理 ----
     def get_glass_catalogs(self, catalog: str = None) -> str:
         """获取玻璃库信息：当前使用的目录、可用目录、指定目录中的材料。"""
@@ -1413,6 +2588,18 @@ class ZemaxToolkit:
 #  辅助
 # ---------------------------------------------------------------------------
 
+def _refetch_last_row(mfe):
+    """ChangeType() 调用可能使原 row COM 引用失效（内部创建新对象），
+    通过 NumberOfOperands 行号重新获取最新有效引用。
+    在 _set_row_operand_type 后立即调用，确保后续参数写入有效。
+    """
+    try:
+        num = _safe(mfe, "NumberOfOperands", 0)
+        return mfe.GetOperandAt(num)
+    except Exception:
+        return None
+
+
 def _safe(obj, attr, default):
     """安全获取 COM 对象属性 (多策略: 直接 → prop_map → 模糊匹配)."""
     # 策略 1: 直接 getattr
@@ -1472,6 +2659,12 @@ _READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "get_merit_function",
     "get_operands",
     "get_first_order_data",
+    "get_image_quality",
+    "get_aberrations",
+    "get_distortion",
+    "get_mtf",
+    "get_mtf_curve",
+    "check_manufacturability",
     "get_glass_catalogs",
     "update_ui",      # 本身就是刷新工具，无需再次触发
     "open_layout",    # 打开窗口后自身已做 ApplyAndWaitForCompletion
@@ -1561,18 +2754,28 @@ def _set_row_operand_type(row, type_val):
 def _set_operand_int_param(row, param_num, value):
     """设置 MFE 行的整数参数 (Param1/Param2/...).
 
-    尝试多种访问路径: 直接属性 → GetOperandCell → GetCellAt.
+    IMFERow (早期绑定) 的 _prop_map_put_ 里没有 Param1/Param2,
+    直接 setattr 只会添加 Python 实例属性而不触发 COM 调用 (静默假成功)。
+    必须用 GetOperandCell(col).IntegerValue 作为首选路径。
+    MeritColumn 枚举: Param1=col2, Param2=col3, Param3=col4, ...
     """
-    # 策略 1: 直接属性 Param1, Param2, ...
-    attr = f"Param{param_num}"
-    if _safe_set_attr(row, attr, value):
-        return True
-    # 策略 2: GetOperandCell (col 2=Int1, col 3=Int2 in ZOS-API)
-    col_idx = param_num + 1
+    col_idx = param_num + 1  # Param1→col2, Param2→col3, ...
+    # 策略 1: GetOperandCell (IMFERow 的正确路径)
     try:
         cell = row.GetOperandCell(col_idx)
         if cell is not None:
-            cell.IntegerValue = value
+            # 先读回确认写入有效
+            cell.IntegerValue = int(value)
+            return True
+    except Exception:
+        pass
+    # 策略 2: 直接属性 Param1, Param2, ... (IMCERow 等其他接口)
+    attr = f"Param{param_num}"
+    try:
+        # 只对有 _prop_map_put_ 记录的真实 COM 属性才写入
+        prop_map = getattr(row.__class__, "_prop_map_put_", {})
+        if attr in prop_map:
+            setattr(row, attr, int(value))
             return True
     except Exception:
         pass
@@ -1581,9 +2784,42 @@ def _set_operand_int_param(row, param_num, value):
         cell = row.GetCellAt(col_idx)
         if cell is not None:
             try:
-                cell.IntegerValue = value
+                cell.IntegerValue = int(value)
             except AttributeError:
-                cell.Value = value
+                cell.Value = str(value)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _set_operand_double_param(row, param_num, value):
+    """设置 MFE 行的浮点参数 (Hx/Hy/Px/Py/frequency 等).
+
+    MeritColumn 枚举: Param1=col2, Param2=col3, Param3(Hx)=col4, Param4(Hy)=col5, ...
+    使用 GetOperandCell(col).DoubleValue 写入。
+    """
+    col_idx = param_num + 1
+    # 策略 1: GetOperandCell.DoubleValue (首选)
+    try:
+        cell = row.GetOperandCell(col_idx)
+        if cell is not None:
+            cell.DoubleValue = float(value)
+            return True
+    except Exception as e:
+        # 如果 DoubleValue 抛出 "Expected Double, got Integer" 等, 尝试字符串路径
+        try:
+            cell = row.GetOperandCell(col_idx)
+            if cell is not None:
+                cell.Value = str(float(value))
+                return True
+        except Exception:
+            pass
+    # 策略 2: GetCellAt.DoubleValue
+    try:
+        cell = row.GetCellAt(col_idx)
+        if cell is not None:
+            cell.DoubleValue = float(value)
             return True
     except Exception:
         pass
