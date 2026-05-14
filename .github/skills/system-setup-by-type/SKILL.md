@@ -188,6 +188,61 @@ set_default_merit_function(data=0, ...)  # data=0 = Wavefront
 
 ---
 
+### 4B. 完整显微镜系统 (Microscope + Eyepiece)
+
+**核心特点**：显微物镜与目镜合成，既要保持物镜共轭距/工作距/NA，又要保持目镜焦距和总倍率。不能直接套普通显微物镜或普通相机物镜模板。
+
+**孔径**（按讲义 6-3）：
+```
+set_aperture("ImageSpaceFNumber", 2.0)
+set_ray_aiming(enabled=true, mode="Paraxial")
+```
+
+**视场**：完整目视显微镜通常按目镜视场角检查，例如 10x/20° 目镜可用：
+```
+set_fields("Angle", [
+  {"x": 0, "y": 0},
+  {"x": 0, "y": 14},
+  {"x": 0, "y": 20}
+])
+```
+
+**讲义 6-3 评价函数骨架**（行号必须用 `build_operand_block` 的 label/ref 自动解析，不手写）：
+```
+# MAGNIFICATION
+REAR/REAY surface=intermediate_image_surface, wave=2, hy=1  # 物镜物高，监视
+REAR/REAY surface=objective_image_surface,     wave=2, hy=1  # 物镜像高，监视
+DIVI target=10, weight=0~0.1                                # 物镜倍率；讲义为监视，工程优化可低权重锁定
+CONS target=250                                             # 明视距离
+EFLY int1=eyepiece_first_surface, int2=eyepiece_last_surface, target=25, weight=0
+DIVI target=10, weight=0                                    # 目镜倍率监视
+PROD target=100, weight=0.1                                 # 总倍率
+
+# SYSTEM TRACK / WORKING DISTANCE
+TTHI int1=eyepiece_first_surface, int2=final_surface, target=231, weight>0
+TTHI int1=objective_start_surface, int2=final_surface, target=195, weight=0.1
+CTGT int1=last_objective_glass_surface, target=7, weight=0.1~1  # 工作距下限，不是精确等式
+
+# THICKNESS BOUNDARY
+MNCT/MNET/MNCG/MNEG/MXCG/MXEG 只约束物镜可变玻璃面段；排除成熟目镜和 0.17mm 盖玻片。
+```
+
+**面号规则**：讲义中的 `9-14`、`15` 等面号只对讲义示例成立。Agent 必须先用 `get_system_info` / layout / surface comments 确认当前文件的真实面号；例如插入目镜后，物镜玻璃面段可能变成 `10-15`，此时局部边界用 `10-15` 是合理的。
+
+**REAR 与 REAY 取舍**：讲义说明两者均可。`REAR` 只控制径向高度，适合绝对倍率；若需要验证倒像方向或符号，应改用 `REAY` 并检查目标正负号。
+
+**SPT 到波前的切换**：先用 RMS spot 默认块收敛几何和点列图；若 MTF/波前未达衍射极限，再保持上述几何块不变，把默认块改为 Wavefront，并用短轮次 DLS 探路。不得在几何约束未稳时直接长轮次波前优化。
+
+**通光/相对照度硬门槛**：完整显微镜按 20° 目镜视场检查时，每轮像质验收前必须优先调用 `get_relative_illumination_data()`。若最大视场相对照度为 0、低于工程阈值、`blocked_fields` 非空或 `drop_events` 显示边缘照度骤降，SPT、点列图、MTF 均不可作为有效像质结果，应优先调用 `get_vignetting_diagram_data()` / `get_ray_fan_data()` 定位遮拦，并处理渐晕/光阑/孔径/Ray Aiming/视场设置。`check_field_illumination()` 只作为 RELI 操作数兜底，不能替代 Analysis 图窗结果。
+
+**MTF 验收**：显微镜 MTF 优化与验收使用标准 `MTFS`/`MTFT`，并优先用 `get_fft_mtf_vs_field(frequencies=[50,100,200,300])` 获取 Zemax Analysis 数据。临时 MFE 工具 `get_mtf/get_mtf_curve` 可用于快速复核；若工具、MFE、图窗之间不一致，先诊断参数和通光状态，不继续优化。
+
+**APO 判断**：`AXCL` 只能说明近轴轴向色差，不能单独作为复消色差验收。APO 设计应结合三色多孔径 `REAY/TRAY` 差值约束、`get_longitudinal_aberration_data()`、`get_lateral_color_data()` 和边缘孔径球差检查。
+
+**畸变约束**：显微镜可用 `DIMX/DISC` 监视畸变。早期优化不建议强压畸变，否则会和 NA、场曲、SPT 竞争；当 spot/NA 稳定后，若用途要求显微畸变 <1%，再以低权重加入。
+
+---
+
 ### 5. 望远物镜 (Telescope Objective)
 
 **核心特点**：无穷远物，角度视场，用口径（EPD）定义

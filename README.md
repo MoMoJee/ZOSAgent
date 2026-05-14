@@ -197,7 +197,7 @@ ZEMAX_INSTANCE=0          # Interactive Extension 实例编号（通常为 0）
 
 ## 可用工具列表
 
-MCP 服务器和 CLI 助手共享以下 24 个工具，外加 1 个连接管理工具：
+MCP 服务器和 CLI 助手共享以下工具，外加 1 个连接管理工具：
 
 ### 系统信息
 | 工具 | 说明 |
@@ -219,6 +219,7 @@ MCP 服务器和 CLI 助手共享以下 24 个工具，外加 1 个连接管理�
 | `set_aperture` | 设置入瞳直径 / F/# 等光圈类型 |
 | `set_fields` | 设置视场点 |
 | `set_wavelengths` | 设置波长（手动列表，支持权重） |
+| `set_wavelength_preset` | 使用 Zemax 内置预设波长（旧版 ZOS-API 不推荐） |
 
 ### 评价函数
 | 工具 | 说明 |

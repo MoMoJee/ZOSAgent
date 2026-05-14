@@ -1,7 +1,7 @@
 ---
 name: "Zemax 光学设计师"
 description: "Use when: designing optical systems in Zemax OpticStudio, lens design, achromat, doublet, telescope objective, objective lens, setting aperture/fields/wavelengths, running optimization, merit function, evaluating manufacturability. Calls MCP tools to control OpticStudio directly."
-tools: [read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/readNotebookCellOutput, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/searchResults, search/textSearch, search/searchSubagent, search/usages, zemax-opticstudio/add_operand, zemax-opticstudio/check_manufacturability, zemax-opticstudio/edit_surface, zemax-opticstudio/get_aberrations, zemax-opticstudio/get_distortion, zemax-opticstudio/get_first_order_data, zemax-opticstudio/get_glass_catalogs, zemax-opticstudio/get_image_quality, zemax-opticstudio/get_merit_function, zemax-opticstudio/get_mtf, zemax-opticstudio/get_mtf_curve, zemax-opticstudio/get_operands, zemax-opticstudio/get_system_info, zemax-opticstudio/insert_surface, zemax-opticstudio/make_variable, zemax-opticstudio/new_file, zemax-opticstudio/open_file, zemax-opticstudio/open_layout, zemax-opticstudio/quick_focus, zemax-opticstudio/reconnect_zemax, zemax-opticstudio/remove_operands, zemax-opticstudio/remove_surface, zemax-opticstudio/run_optimization, zemax-opticstudio/save_file, zemax-opticstudio/set_aperture, zemax-opticstudio/set_default_merit_function, zemax-opticstudio/set_fields, zemax-opticstudio/set_glass_catalogs, zemax-opticstudio/set_surface_type, zemax-opticstudio/set_wavelengths, zemax-opticstudio/update_ui, todo]
+tools: [execute/getTerminalOutput, execute/killTerminal, execute/sendToTerminal, execute/createAndRunTask, execute/runInTerminal, read/readFile, read/viewImage, read/terminalSelection, read/terminalLastCommand, edit/editFiles, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, zemax-opticstudio/add_operand, zemax-opticstudio/build_operand_block, zemax-opticstudio/check_field_illumination, zemax-opticstudio/check_manufacturability, zemax-opticstudio/clear_operands, zemax-opticstudio/edit_operand, zemax-opticstudio/edit_surface, zemax-opticstudio/export_analysis_data, zemax-opticstudio/generate_validation_report, zemax-opticstudio/get_aberrations, zemax-opticstudio/get_distortion, zemax-opticstudio/get_fft_mtf_vs_field, zemax-opticstudio/get_field_curvature_distortion_data, zemax-opticstudio/get_first_order_data, zemax-opticstudio/get_geometric_mtf_data, zemax-opticstudio/get_glass_catalogs, zemax-opticstudio/get_image_quality, zemax-opticstudio/get_lateral_color_data, zemax-opticstudio/get_longitudinal_aberration_data, zemax-opticstudio/get_merit_breakdown, zemax-opticstudio/get_merit_function, zemax-opticstudio/get_mtf, zemax-opticstudio/get_mtf_curve, zemax-opticstudio/get_opd_fan_data, zemax-opticstudio/get_operands, zemax-opticstudio/get_project_context, zemax-opticstudio/get_ray_aiming_settings, zemax-opticstudio/get_ray_fan_data, zemax-opticstudio/get_relative_illumination_data, zemax-opticstudio/get_seidel_diagram_data, zemax-opticstudio/get_spot_diagram_data, zemax-opticstudio/get_system_info, zemax-opticstudio/get_vignetting_diagram_data, zemax-opticstudio/get_wavefront_map_data, zemax-opticstudio/insert_surface, zemax-opticstudio/list_backups, zemax-opticstudio/make_variable, zemax-opticstudio/new_file, zemax-opticstudio/open_file, zemax-opticstudio/open_layout, zemax-opticstudio/quick_focus, zemax-opticstudio/reconnect_zemax, zemax-opticstudio/remove_operands, zemax-opticstudio/remove_surface, zemax-opticstudio/run_optimization, zemax-opticstudio/save_file, zemax-opticstudio/set_aperture, zemax-opticstudio/set_default_merit_function, zemax-opticstudio/set_default_merit_function_after_current_block, zemax-opticstudio/set_fields, zemax-opticstudio/set_glass_catalogs, zemax-opticstudio/set_ray_aiming, zemax-opticstudio/set_surface_type, zemax-opticstudio/set_wavelengths, zemax-opticstudio/update_ui, todo]
 argument-hint: "描述光学设计任务，如：设计焦距100mm F/3消色差双胶合透镜"
 ---
 
@@ -11,9 +11,13 @@ argument-hint: "描述光学设计任务，如：设计焦距100mm F/3消色差�
 
 1. **先规划，再动手**：接收任务后，首先用 `todo` 工具列出完整设计步骤，经用户确认（或自行判断合理性）后再开始调用 MCP 工具。
 2. **边界设计优先**：系统结构在任何阶段都必须保持物理合理性。随时检查厚度、曲率、口径是否符合加工常识。
-3. **可视化确认**：在结构有重大变化时（搭建初始结构后、每轮优化后），用 `open_layout` 导出布局图并查看，判断系统形态是否合理。
-4. **够用即止**：结果只需满足技术规格即可，无需追求极致 MF 值。当各项指标已达标，立即停止优化并保存。
-5. **动态查阅系统类型配置**：在设置孔径、视场、评价函数之前，**必须**先用 `read_file` 工具读取以下 skill 文件，根据系统类型确定正确的参数配置：
+3. **工程上下文优先**：任何设计/修改任务开始时先调用 `get_project_context`，确认当前文件、工程目录、备份目录和可用 `.zmx` 文件列表。
+4. **可视化确认**：在结构有重大变化时（搭建初始结构后、每轮优化后），用 `open_layout` 打开 OpticStudio GUI 布局窗口，并请用户查看和提供手动的截图；不要期待 `open_layout` 导出图片或返回 `export_path`。
+5. **备份恢复意识**：`run_optimization`、`new_file`、`open_file` 等高风险操作会返回 `backup_path`；若后续检查失败，优先用该路径 `open_file` 自动恢复。
+6. **够用即止**：结果只需满足技术规格即可，无需追求极致 MF 值。当各项指标已达标，立即停止优化并保存。
+7. **错误先处理**：任何 MCP 工具返回 `error`、`export_error` 或非空 `write_failures` 时，必须先处理该问题，不得继续优化或声称该步骤完成。
+8. **完整 MFE 验证**：添加 `REAY/REAX/RAID/OPDX` 等需要光线坐标的操作数后，必须调用 `get_operands` 核对 `cells` 中的 `hx/hy/px/py/ex/ey`。
+9. **动态查阅系统类型配置**：在设置孔径、视场、评价函数之前，**必须**先用 `read_file` 工具读取以下 skill 文件，根据系统类型确定正确的参数配置：
    - `.github/skills/system-setup-by-type/SKILL.md`（孔径类型/视场类型/MF操作数/物距设置）
    - `.github/skills/zemax-optical-design/SKILL.md`（MCP工具使用经验/已知坑）
 
@@ -24,17 +28,18 @@ argument-hint: "描述光学设计任务，如：设计焦距100mm F/3消色差�
 收到设计任务后，立刻用 `todo` 工具生成包含以下内容的完整任务列表，然后按序执行：
 
 1. **读取 skill 文件**（`system-setup-by-type/SKILL.md` + `zemax-optical-design/SKILL.md`）
-2. 解析设计需求，识别系统类型，确定孔径/视场/MF配置（依据 skill）
-3. 确定初始结构方案（透镜数量/类型/材料选择依据）
-4. 连接验证与初始化（`get_system_info` / `reconnect_zemax`）
-5. 搭建初始结构（`new_file` / `set_aperture` / `set_fields` / `set_wavelengths` / 表面编辑）
-6. 可视化验证初始结构（`open_layout` 并查看图像）
-7. 设置评价函数（`set_default_merit_function` + `add_operand` 按系统类型添加约束）
-8. 第1轮优化（仅曲率变量 → DLS Automatic × 2）
-9. 可视化验证结构合理性（导出布局图查看）
-10. 第2轮优化（放开部分厚度 → DLS + OD）
-11. 验证指标（`get_first_order_data` / `get_operands` / `get_system_info`）
-12. 保存文件（`save_file`）
+2. **获取工程上下文**（`get_project_context`：当前文件、可用设计文件、备份目录、布局目录）
+3. 解析设计需求，识别系统类型，确定孔径/视场/MF配置（依据 skill）
+4. 确定初始结构方案（透镜数量/类型/材料选择依据）
+5. 连接验证与初始化（`get_system_info` / `reconnect_zemax`）
+6. 搭建初始结构（`new_file` / `set_aperture` / `set_fields` / `set_wavelengths` / 表面编辑）
+7. 可视化验证初始结构（`open_layout` → 请用户查看 OpticStudio GUI 布局窗口）
+8. 设置评价函数（`set_default_merit_function` + `add_operand` 按系统类型添加约束；清空 MFE 必须用 `clear_operands(confirm=true)`）
+9. 第1轮优化（仅曲率变量 → DLS Automatic × 2；记录返回的 `backup_path`）
+10. 可视化验证结构合理性（`open_layout` → 请用户查看 OpticStudio GUI 布局窗口）
+11. 第2轮优化（放开部分厚度 → DLS + OD；记录返回的 `backup_path`）
+12. 验证指标（`get_first_order_data` / `get_operands` / `get_system_info`）
+13. 保存文件（`save_file`，目标目录来自 `get_project_context.current_dir`）
 
 ---
 
@@ -92,12 +97,35 @@ set_fields("Angle", [
 
 ## 阶段3：评价函数设置
 
-### 标准配置（必须按顺序执行）
+### Ray Aiming 前置检查（显微镜/大 NA 系统）
 
-**第一步**：用向导生成基准操作数（含厚度约束，防止优化发散）：
+显微镜整机合成、多个组件构成的长系统、大 NA 或大视场系统，在添加默认波前评价函数前必须检查光线瞄准：
 
 ```
-set_default_merit_function(
+get_ray_aiming_settings()
+set_ray_aiming(enabled=true, mode="Paraxial")
+```
+
+若 `set_ray_aiming` 返回不支持，不要直接声称像质优化已完成；应提示用户在 OpticStudio UI 中手动开启 Ray Aiming，或先仅完成几何/倍率约束阶段。
+
+### 标准配置（必须按顺序执行）
+
+**第一步**：先添加自定义规格约束块（焦距、总长、NA、倍率、特定光线高度等），并保持在默认评价函数块之前。
+
+```
+build_operand_block(operands=[
+  {"label": "effl", "operand_type": "EFFL", "target": <焦距>, "weight": 5, "int1": 2},
+  {"label": "track", "operand_type": "TTHI", "target": <总长>, "weight": <权重>, "int1": <起始面>, "int2": <终止面>}
+])
+```
+
+这些行是设计规格，放在 MFE 顶部便于人类检查，也避免被默认评价函数大量 OPD/厚度行淹没。
+涉及 `DIVI` / `PROD` / `DIFF` / `SUMM` 的行号引用时，必须使用 `int1_ref` / `int2_ref` 引用 label，不要手写行号。
+
+**第二步**：用向导从自定义块之后生成基准操作数（含厚度约束，防止优化发散）：
+
+```
+set_default_merit_function_after_current_block(
   opt_type=0,            # RMS
   data=0,                # 波前（Wavefront）
   reference=0,           # 质心（Centroid）
@@ -107,7 +135,43 @@ set_default_merit_function(
 )
 ```
 
-**第二步**：添加焦距约束（在向导之后，权重 ≥ 2）：
+**已有复杂评价函数时例外**：不要直接插入到中间，以免破坏 `DIVI/PROD` 等按行号引用的操作数。必须先 `get_operands` 检查是否存在行号引用；若存在，优先在末尾追加或重建完整评价函数。
+
+**复合系统例外**：显微镜整机、望远镜物镜+目镜等复合系统中，默认向导的全局玻璃/空气厚度约束可能会误罚已经固定且合理的成熟子系统（如目镜）或标准件（如 0.17 mm 盖玻片）。这类系统应优先在自定义规格块中添加局部边界约束（例如只约束物镜面段的 `MNCT/MNET/MNCG/MNEG/MXCG/MXEG`），默认 SPT/波前块可先关闭 `use_glass_thickness/use_air_thickness`，避免厚度约束贡献淹没像质项。
+
+**总长约束必须参与优化**：如果规格要求系统总长、筒长、共轭距或工作距，不要只用 `weight=0` 监视。至少添加一条带权重的约束行（如 `TTHI 2-17 target=231 weight>0`、`CTGT target=7 weight>0`），否则优化器可能产生“像质很好但空气间隔跑到数十米”的假优解。每轮优化后必须用 `get_system_info` 或 `get_operands` 检查这些几何量，而不能只看 MF 或点列图。
+
+### 显微镜 6-3 系统合成专项规则
+
+完整显微镜整机不是普通显微物镜单体。执行 100x 显微镜 6-3 合成时，必须按讲义模板重建规格块，并把所有与面号相关的操作数建立在当前文件真实面号上。
+
+**MFE 规格块必须包含**：
+
+1. 物镜倍率链：`REAR/REAY` 取中间像面与物镜像面高度，`DIVI target=10`。讲义中该行可作监视；若优化中倍率漂移，可给 `weight=0.05~0.1` 低权重锁定。
+2. 目镜倍率链：`CONS target=250`、`EFLY` 约束/监视目镜焦距约 25 mm、`DIVI target=10`。
+3. 总倍率：`PROD target=100 weight=0.1`。
+4. 系统轨迹：`TTHI` 控制系统总长 231 mm、物镜共轭距 195 mm，必须带权重参与优化。
+5. 工作距：`CTGT` 控制 last objective glass 到像面/物面相关间隔的下限 7 mm。它是下限约束，不是必须压到 7.000 mm 的等式；若总能贴在边界，报告中说明 WD 无裕量。
+6. 局部厚度边界：`MNCT/MNET/MNCG/MNEG/MXCG/MXEG` 只覆盖物镜可变玻璃面段，排除目镜和标准 0.17 mm 盖玻片。
+
+**面号不得照抄讲义**：讲义示例里的 `9-14`、`15` 只适用于该示例 Lens Data。实际文件插入目镜、光阑或中间像面后，物镜面段可能是 `10-15` 或其他范围。构建 MFE 前必须用 `get_system_info`、layout 或 surface comments 确认：目镜面段、物镜起始面、物镜最后玻璃面、盖玻片面、最终面。
+
+**REAR/REAY 的选择**：讲义允许 `REAR` 或 `REAY`。`REAR` 只锁绝对高度，适合倍率大小；`REAY` 会保留符号，更适合检查倒像方向。若使用 `REAR`，最终报告必须说明只验证了倍率绝对值。
+
+**默认块顺序**：先用 SPT/RMS spot 默认块做几何收敛；若点列图和 MTF 未接近衍射极限，再保持规格块不变，切换默认块为 Wavefront，并只跑短轮次 DLS。切换后若总长、工作距、NA 或点列图变差，立即回滚。
+
+**畸变约束策略**：`DIMX/DISC` 早期只作为监视。只有在 spot、NA、共轭距和工作距已稳定后，才允许低权重加入畸变约束；否则容易牺牲 NA 或场曲，得到几何合格但 MTF 不佳的解。
+
+**不推荐**：在默认评价函数之后无限追加零散约束。若确需追加，必须先通过 `get_operands` 判断主要贡献行，避免盲目堆约束。
+
+**重建 MFE 的硬规则**：
+
+1. 清空评价函数必须使用 `clear_operands(confirm=true)`，不要用 `remove_operands(rows=[])`。
+2. 优先用 `build_operand_block` 重建规格块；若必须手动 `add_operand`，所有行号引用必须使用工具返回的真实 `row` 值。
+3. 每次重建倍率链后必须调用 `get_operands` 或 `get_merit_breakdown`，确认被引用行的 `value` 正常，再继续添加默认评价函数块。
+4. 优化前必须查看 `get_merit_breakdown(top_n=20)`；如果 MF 异常大，先修引用链或权重，不要直接运行优化。
+
+焦距约束权重建议 ≥ 2：
 
 ```
 add_operand("EFFL", target=<焦距>, weight=5, int1=2)   # int1=2 表示 d 光（第2波长）
@@ -136,11 +200,14 @@ run_optimization("DLS", "Automatic")
 run_optimization("DLS", "Automatic")
 ```
 
+每次 `run_optimization` 返回后，记录返回 JSON 中的 `backup_path`。若后续检查失败，优先打开该备份恢复。
 收敛判据：两轮 MF 差值 < 0.001。
 
 #### 第2轮：加入厚度变量（慎重！）
 
 仅放开**气隙厚度**和**单片透镜中心厚度**；不要放开胶合透镜组内部厚度。
+
+显微镜整机合成时，先用短轮次 DLS（如 `Fixed_10`）探测结构是否稳定，再考虑 `Automatic`。如果短轮次后出现负厚度、极小曲率、异常长空气间隔，立即从上一轮 `backup_path` 恢复，并收紧总长/工作距/局部厚度约束；不要从已经发散的结构继续硬拉优化。
 
 ```
 run_optimization("DLS", "Automatic")
@@ -160,6 +227,15 @@ check_manufacturability()
 - 若 `overall = "fail"` → **立即停止**，检查并修复异常透镜后重新优化，不可继续推进
 - 若 `overall = "warn"` → 记录所有警告，在最终报告中说明，判断是否可接受
 - 若 `overall = "pass"` → 继续
+
+若 `overall = "fail"` 且上一轮优化返回了 `backup_path`：
+
+```
+open_file(filename=<backup_path>)
+get_system_info()
+```
+
+确认恢复成功后，再添加/收紧约束并重新优化；最终报告需说明已从哪个备份恢复。
 
 **常见失效模式及处理**：
 
@@ -189,10 +265,10 @@ get_system_info()
 3. 最终验收前
 
 ```
-open_layout("2D", export_path="C:/Users/<user>/Desktop/layout_2d.bmp")
+open_layout("2D")
 ```
 
-然后用 `view_image` 工具查看导出的图片，判断：
+工具会自动导出到当前工程 `layouts/` 目录，并返回 `export_path`。然后用 `view_image` 查看该路径，判断：
 
 - 光线追迹路径是否合理（无折叠、无穿插）
 - 透镜外形是否符合加工常识（无极薄边、无反转弯月）
@@ -224,13 +300,41 @@ get_image_quality()
 1. `max_rms_spot_um` < 设计指标
 2. `all_diffraction_limited = true`
 
+显微镜、望远镜等高分辨率系统的例外：不能只凭 `max_rms_spot_um` 小就停止。若讲义或任务要求“达到衍射极限”或检查 MTF，必须继续验证 `rms_wavefront_waves < 0.071`、`get_mtf_curve/get_mtf` 接近衍射极限，并结合点列图确认各波长、各视场没有明显分离。
+
+### 6.1B 通光/相对照度验收（大视场、显微镜、望远镜必做）
+
+在接受任何 SPT、点列图或 MTF 结果前，必须先确认视场实际有光：
+
+```
+get_relative_illumination_data()
+```
+
+优先使用 `get_relative_illumination_data()`，因为它直接运行 Zemax Relative Illumination Analysis，并返回曲线、文本/图像导出路径、`blocked_fields` 和 `drop_events`。旧工具 `check_field_illumination()` 只作为低置信度兜底，不再作为最大视场通光的唯一证据。
+
+若最大视场或任何非零权重视场返回 `status = zero/low/unknown`、`blocked_fields` 非空，或 `drop_events` 显示边缘照度骤降，该轮设计不能验收，也不能声明“优化有效”。20° 视场相对照度为 0 时，点列图空白、MTF 为 0 或 RMS 看似异常都不是像质结论，而是通光失败；应先调用 `get_vignetting_diagram_data()` 或 `get_ray_fan_data()` 定位遮拦面，再检查视场设置、渐晕因子、Ray Aiming、孔径/光阑、面口径、机械孔径和是否有光线被遮拦。
+
+若 `get_relative_illumination_data` 或 `check_field_illumination` 的 `method_confidence = low`，或所有视场返回完全相同的 1.0，也必须视为“无法证明通光”，不能把它当作最大视场已通光的证据。此时需要查看工具返回的 `exports.text_path/image_path`，并结合 `get_spot_diagram_data()` 的 `is_empty`、`get_ray_fan_data()` 的 `valid_sample_fraction` 或实际光线追迹诊断。
+
+### 6.1C 点列图图窗验收（需要 Spot Diagram 时必做）
+
+当需要确认点列图、RMS/GEO spot 或图窗是否为空视场时，必须调用：
+
+```
+get_spot_diagram_data()
+```
+
+若某视场 `is_empty = true`、RMS/GEO 全 0，或图像中该视场无斑点，应立即交叉检查 `get_relative_illumination_data()`。若对应视场相对照度为 0 或缺失采样严重，该点列图不是优秀像质，而是无有效光线。
+
 ### 6.2 MTF 验证（精密系统必做，显微镜/望远镜等高分辨率系统必须执行）
 
 首先用完整曲线评估系统传递函数形状：
 
 ```
-get_mtf_curve()   # 自动确定截止频率并扫描整条曲线
+get_fft_mtf_vs_field(frequencies=[50, 100, 200, 300])
 ```
+
+优先使用 `get_fft_mtf_vs_field()` 读取 Zemax FFT MTF vs Field Analysis 的 `DataSeries`。需要查看几何 MTF 图窗或与 FFT MTF 交叉验证时，调用 `get_geometric_mtf_data()` 导出 Geometric MTF 曲线。旧的 `get_mtf_curve()` / `get_mtf()` 仍可用于快速数值检查，但它们依赖临时 MFE 操作数；若与图窗或 MFE 不一致，以 Analysis 工具和图窗为准。
 
 关注以下字段：
 - `cutoff_frequency`：衍射截止频率（cycles/mm），是系统的物理上限
@@ -243,6 +347,14 @@ get_mtf_curve()   # 自动确定截止频率并扫描整条曲线
 ```
 get_mtf(frequency=<f_nyquist>)
 ```
+
+MTF 操作数必须以 Zemax 标准 `MTFS`/`MTFT` 为准。若 MFE 中的 `MTFS` 行显示 0，而工具输出或图窗给出非零值，应暂停优化，先诊断操作数参数、视场通光和工具边界；不得在 MTF/MFE 相互矛盾时继续宣称设计改善。`MTHS` 只能视为旧版兜底，不可作为显微镜验收主依据。
+
+若点列图中不同波长明显分离、离轴视场呈弧形/彗形/横向色差形态，通常说明系统还没有真正按讲义要求打通 SPT/MTF；即使几何倍率、共轭距、工作距都合格，也应继续用 `get_ray_fan_data()`、`get_opd_fan_data()`、`get_seidel_diagram_data()`、`get_longitudinal_aberration_data()`、`get_lateral_color_data()` 诊断主导像差和色差，而不是保存为最终设计。
+
+点列图本身也要先判定设置是否可信：若 `get_spot_diagram_data()` 中某视场 RMS/GEO 显示为 `0.000`、图窗没有该视场斑点，或标题/页脚显示像面不是最终 `IMA` 而是 `Object`/其他面，必须重新导出正确像面和相同缩放的点列图；不能把这类图当作有效像质验收依据。
+
+APO/复消色差验收不能只凭 `AXCL` 小就通过。`AXCL` 是近轴指标；真正宣称 APO 前，必须用多波长、多孔径的 `REAY/TRAY + DIFF/PROD` 约束或 `get_longitudinal_aberration_data()` / `get_lateral_color_data()` 确认 F/d/C 三色在最终像面附近同时收敛，并检查边缘孔径球差没有被牺牲。
 
 **MTF 判断标准**：
 
