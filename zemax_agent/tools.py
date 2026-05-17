@@ -2,7 +2,6 @@
 
 import json
 import math
-import re
 import shutil
 import struct
 import traceback
@@ -181,7 +180,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "set_wavelengths",
-            "description": "使用手动列表设置系统波长（会清除并替换所有现有波长）。例如 F/d/C 三波长请传入 wavelengths 列表。",
+            "description": "设置系统波长（会清除并替换所有现有波长）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -203,26 +202,13 @@ TOOL_DEFINITIONS = [
                         },
                         "description": "波长列表",
                     },
-                },
-                "required": ["wavelengths"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_wavelength_preset",
-            "description": "使用 Zemax 内置预设设置系统波长。旧版 ZOS-API 的预设可能不可靠，消色差设计优先使用 set_wavelengths 手动列表。",
-            "parameters": {
-                "type": "object",
-                "properties": {
                     "preset": {
                         "type": "string",
                         "enum": ["d_light", "C_light", "F_light", "FdC_Visible"],
-                        "description": "预设波长",
+                        "description": "使用预设波长 (设置此项时忽略 wavelengths)",
                     },
                 },
-                "required": ["preset"],
+                "required": [],
             },
         },
     },
@@ -737,7 +723,7 @@ TOOL_DEFINITIONS = [
             "name": "open_layout",
             "description": (
                 "在 OpticStudio GUI 中打开一个新的 2D 或 3D 布局图窗口，显示当前光学系统结构。"
-                "窗口会自动计算并渲染；布局图片导出不作为 MCP 功能提供，请在 OpticStudio GUI 中查看。"
+                "窗口会自动计算并渲染；不提供 export_path 时会自动导出到当前工程 layouts/ 目录并返回路径。"
             ),
             "parameters": {
                 "type": "object",
@@ -746,6 +732,10 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "enum": ["2D", "3D"],
                         "description": "布局类型: 2D=横截面, 3D=三维视图 (默认 2D)",
+                    },
+                    "export_path": {
+                        "type": "string",
+                        "description": "可选：导出图像的文件路径 (支持 .bmp/.wmf)。不提供则自动生成。",
                     },
                 },
                 "required": [],
@@ -904,7 +894,7 @@ TOOL_DEFINITIONS = [
                             "standard_spot", "relative_illumination", "vignetting_diagram",
                             "ray_fan", "opd_fan", "longitudinal_aberration", "lateral_color",
                             "fft_mtf", "fft_mtf_vs_field", "huygens_mtf", "field_curvature_distortion",
-                            "geometric_mtf", "seidel_diagram", "seidel_coefficients", "wavefront_map",
+                            "wavefront_map",
                         ],
                         "description": "要运行的分析类型。",
                     },
@@ -969,27 +959,6 @@ TOOL_DEFINITIONS = [
                     "wave": {"type": "integer", "description": "波长编号；0 = 所有波长 (默认)"},
                     "sample_size": {"type": "integer", "description": "采样枚举，默认不改 Zemax 当前值"},
                     "remove_vignetting": {"type": "boolean", "description": "是否 Remove Vignetting，默认 false"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_geometric_mtf_data",
-            "description": "通过 Geometric MTF Analysis 获取几何 MTF 曲线，并导出文本/图像供查看；适合与 FFT MTF 交叉验证几何像质。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "field": {"type": "integer", "description": "视场编号；0 = 所有视场 (默认)"},
-                    "wave": {"type": "integer", "description": "波长编号；0 = 所有波长 (默认)"},
-                    "maximum_frequency": {"type": "number", "description": "最大空间频率 cycles/mm，默认不改 Zemax 当前值"},
-                    "sample_size": {"type": "integer", "description": "采样枚举，默认不改 Zemax 当前值"},
-                    "multiply_by_diffraction_limit": {"type": "boolean", "description": "是否乘以衍射极限，默认 false"},
-                    "scatter_rays": {"type": "boolean", "description": "是否散射光线，默认 false"},
-                    "use_dashes": {"type": "boolean", "description": "是否用虚线显示，默认 true"},
-                    "use_polarization": {"type": "boolean", "description": "是否使用偏振追迹，默认 false"},
                 },
                 "required": [],
             },
@@ -1076,24 +1045,6 @@ TOOL_DEFINITIONS = [
                     "field": {"type": "integer", "description": "视场编号；0 = 所有视场/默认"},
                     "wave": {"type": "integer", "description": "波长编号；0 = 主波长/默认"},
                     "sampling": {"type": "integer", "description": "采样枚举，默认不改 Zemax 当前值"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_seidel_diagram_data",
-            "description": "通过 Seidel Diagram Analysis 查看各面初级像差贡献；若 Zemax API 无法导出真图，则附加 Seidel Coefficients 并由 Python 渲染 PNG 柱状图兜底。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ignore_chromatic": {"type": "boolean", "description": "是否忽略色差项，默认 false"},
-                    "ignore_distortion": {"type": "boolean", "description": "是否忽略畸变项，默认 false"},
-                    "suppress_frame": {"type": "boolean", "description": "是否隐藏图框，默认 false"},
-                    "plot_scale": {"type": "number", "description": "图像比例尺，默认不改 Zemax 当前值"},
-                    "keep_window": {"type": "boolean", "description": "是否保留 Zemax 赛德尔图窗口供查看，默认 true"},
                 },
                 "required": [],
             },
@@ -1549,21 +1500,26 @@ class ZemaxToolkit:
         )
 
     # ---- 波长 ----
-    def set_wavelengths(self, wavelengths: list | None = None, preset: str | None = None) -> str:
+    def set_wavelengths(self, wavelengths: list = None, preset: str = None) -> str:
         sys_data = self.conn.system_data
         wls = sys_data.Wavelengths
 
         if preset:
-            return json.dumps(
-                {"error": "set_wavelengths 只接受手动 wavelengths 列表；如需使用预设，请调用 set_wavelength_preset。"},
-                ensure_ascii=False,
-            )
+            preset_map = {
+                "d_light": 3,     # d-光 0.5876 μm
+                "C_light": 2,     # C-光 0.6563 μm
+                "F_light": 1,     # F-光 0.4861 μm
+                "FdC_Visible": 4,  # F, d, C 三波长
+            }
+            val = preset_map.get(preset, 3)
+            try:
+                wls.SelectWavelengthPreset(val)
+            except Exception as e:
+                return json.dumps({"error": f"预设波长设置失败: {e}"}, ensure_ascii=False)
+            return json.dumps({"ok": True, "preset": preset}, ensure_ascii=False)
 
         if not wavelengths:
-            return json.dumps(
-                {"error": "需要提供 wavelengths 手动列表；如需使用预设，请调用 set_wavelength_preset。"},
-                ensure_ascii=False,
-            )
+            return json.dumps({"error": "需要提供 wavelengths 或 preset"}, ensure_ascii=False)
 
         # 清除现有波长
         while wls.NumberOfWavelengths > 1:
@@ -1582,23 +1538,6 @@ class ZemaxToolkit:
             {"ok": True, "count": len(wavelengths)},
             ensure_ascii=False,
         )
-
-    def set_wavelength_preset(self, preset: str) -> str:
-        """使用 Zemax 内置预设设置波长；MCP 暴露为独立工具，避免二选一 schema 被收紧。"""
-        sys_data = self.conn.system_data
-        wls = sys_data.Wavelengths
-        preset_map = {
-            "d_light": 3,     # d-光 0.5876 μm
-            "C_light": 2,     # C-光 0.6563 μm
-            "F_light": 1,     # F-光 0.4861 μm
-            "FdC_Visible": 4,  # F, d, C 三波长
-        }
-        val = preset_map.get(preset, 3)
-        try:
-            wls.SelectWavelengthPreset(val)
-        except Exception as e:
-            return json.dumps({"error": f"预设波长设置失败: {e}"}, ensure_ascii=False)
-        return json.dumps({"ok": True, "preset": preset}, ensure_ascii=False)
 
     # ---- 变量 ----
     def make_variable(self, surface_number: int, param: str, variable: bool) -> str:
@@ -3245,16 +3184,13 @@ class ZemaxToolkit:
                              keep_window: bool = False, export_image: bool = True,
                              export_text: bool = True) -> str:
         """运行指定 Analysis 并返回结构化结果与导出文件。"""
-        canonical = _canonical_analysis_key(analysis)
         result = self._run_analysis_capture(
-            canonical,
+            analysis,
             settings_overrides=settings or {},
             keep_window=bool(keep_window),
             export_image=bool(export_image),
             export_text=bool(export_text),
         )
-        if canonical == "seidel_diagram":
-            self._attach_seidel_diagram_fallback(result)
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     def get_relative_illumination_data(self, wave: int = 0, threshold: float = 0.05) -> str:
@@ -3371,42 +3307,6 @@ class ZemaxToolkit:
             result["warnings"] = sorted(set(result.get("warnings", []) + warnings))
         return json.dumps(result, ensure_ascii=False, indent=2)
 
-    def get_geometric_mtf_data(self, field: int = 0, wave: int = 0,
-                               maximum_frequency: float | None = None,
-                               sample_size: int | None = None,
-                               multiply_by_diffraction_limit: bool = False,
-                               scatter_rays: bool = False,
-                               use_dashes: bool = True,
-                               use_polarization: bool = False) -> str:
-        """通过 Geometric MTF Analysis 获取几何 MTF 曲线。"""
-        settings = {
-            "field": int(field or 0),
-            "wave": int(wave or 0),
-            "MultiplyByDiffractionLimit": bool(multiply_by_diffraction_limit),
-            "ScatterRays": bool(scatter_rays),
-            "UseDashes": bool(use_dashes),
-            "UsePolarization": bool(use_polarization),
-        }
-        if maximum_frequency is not None:
-            settings["MaximumFrequency"] = float(maximum_frequency)
-        if sample_size is not None:
-            settings["SampleSize"] = int(sample_size)
-        result = self._run_analysis_capture(
-            "geometric_mtf",
-            settings_overrides=settings,
-            export_basename="geometric_mtf",
-        )
-        result["maximum_frequency_requested"] = maximum_frequency
-        result["multiply_by_diffraction_limit"] = bool(multiply_by_diffraction_limit)
-        warnings = _mtf_series_warnings(result)
-        if warnings:
-            result["warnings"] = sorted(set(result.get("warnings", []) + warnings))
-        result["interpretation"] = {
-            "purpose": "查看几何 MTF 曲线并与 FFT/Huygens MTF 交叉验证；不含衍射时更敏感于几何像差和遮拦。",
-            "next_step": "若曲线异常为 0 或缺失，优先检查最大视场通光、采样设置和 Analysis 文本导出。",
-        }
-        return json.dumps(result, ensure_ascii=False, indent=2)
-
     def get_ray_fan_data(self, field: int = 0, wave: int = 0, number_of_rays: int | None = None) -> str:
         """通过 Ray Fan Analysis 获取光扇数据。"""
         return self._fan_analysis_json("ray_fan", field, wave, number_of_rays)
@@ -3447,50 +3347,6 @@ class ZemaxToolkit:
             settings["Sampling"] = int(sampling)
         result = self._run_analysis_capture("wavefront_map", settings_overrides=settings, export_basename="wavefront_map")
         return json.dumps(result, ensure_ascii=False, indent=2)
-
-    def get_seidel_diagram_data(self, ignore_chromatic: bool = False,
-                                ignore_distortion: bool = False,
-                                suppress_frame: bool = False,
-                                plot_scale: float | None = None,
-                                keep_window: bool = True) -> str:
-        """获取 Seidel Diagram 图窗导出结果。"""
-        settings: dict[str, object] = {
-            "IgnoreChromatic": bool(ignore_chromatic),
-            "IgnoreDistortion": bool(ignore_distortion),
-            "SuppressFrame": bool(suppress_frame),
-        }
-        if plot_scale is not None:
-            settings["PlotScale"] = float(plot_scale)
-        result = self._run_analysis_capture(
-            "seidel_diagram",
-            settings_overrides=settings,
-            export_basename="seidel_diagram",
-            keep_window=bool(keep_window),
-        )
-        result["window_left_open"] = bool(keep_window)
-        self._attach_seidel_diagram_fallback(result)
-        result["interpretation"] = {
-            "purpose": "查看各面初级 Seidel 像差贡献，辅助定位球差、彗差、像散、场曲、畸变和色差来源。",
-            "next_step": "若某面贡献突兀，优先检查该面曲率、厚度、玻璃选择和光阑相对位置。",
-        }
-        return json.dumps(result, ensure_ascii=False, indent=2)
-
-    def _attach_seidel_diagram_fallback(self, result: dict) -> None:
-        """When Seidel Diagram is GUI-only, add Seidel Coefficients text and a rendered PNG."""
-        if _analysis_capture_has_output(result):
-            return
-        coeff = self._run_analysis_capture(
-            "seidel_coefficients",
-            settings_overrides={},
-            export_basename="seidel_coefficients",
-            export_image=False,
-            export_text=True,
-        )
-        result["seidel_coefficients_fallback"] = coeff
-        _attach_seidel_coefficients_rendered_image(result, coeff)
-        result["warnings"] = sorted(set(result.get("warnings", []) + [
-            "Seidel Diagram 图窗在当前 OpticStudio/ZOS-API 中无法导出可验证图片或文本；已附加 Seidel Coefficients，并在可解析时由 Python 渲染 PNG 柱状图兜底。"
-        ]))
 
     def generate_validation_report(self, frequencies: list | None = None, include_heavy: bool = False) -> str:
         """批量运行常用分析，形成验收报告。"""
@@ -4001,20 +3857,17 @@ class ZemaxToolkit:
         )
 
     def open_layout(self, layout_type: str = "2D", export_path: str | None = None) -> str:
-        """在 OpticStudio GUI 中打开 2D/3D 布局图窗口。"""
+        """在 OpticStudio GUI 中打开 2D/3D 布局图窗口，并导出图像文件。"""
         system = self.conn.system
 
         # AnalysisIDM 枚举值
         layout_map = {"2D": 56, "3D": 57}  # Draw2D=56, Draw3D=57
-        requested_layout_type = (layout_type or "2D").upper()
-        if requested_layout_type not in layout_map:
-            requested_layout_type = "2D"
-        analysis_type = layout_map[requested_layout_type]
+        analysis_type = layout_map.get(layout_type.upper(), 56)
 
         analyses = getattr(system, "Analyses", None)
         if analyses is None:
             return json.dumps(
-                {"error": f"无法打开 {requested_layout_type} 布局窗口: system.Analyses 不可用"},
+                {"error": f"无法打开 {layout_type} 布局窗口: system.Analyses 不可用"},
                 ensure_ascii=False,
             )
         analysis = None
@@ -4022,13 +3875,13 @@ class ZemaxToolkit:
             analysis = analyses.New_Analysis(analysis_type)
         except Exception as e:
             return json.dumps(
-                {"error": f"无法打开 {requested_layout_type} 布局窗口: {e}"},
+                {"error": f"无法打开 {layout_type} 布局窗口: {e}"},
                 ensure_ascii=False,
             )
 
         if analysis is None:
             return json.dumps(
-                {"error": f"无法打开 {requested_layout_type} 布局窗口 (返回 None)"},
+                {"error": f"无法打开 {layout_type} 布局窗口 (返回 None)"},
                 ensure_ascii=False,
             )
 
@@ -4041,20 +3894,38 @@ class ZemaxToolkit:
             except Exception:
                 pass
 
+        auto_export = export_path is None
+        current_file = self._current_system_file()
+        base_dir = current_file.parent if current_file else _WORKSPACE_ROOT
+        layouts_dir = base_dir / "layouts"
+        layouts_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_type = "".join(ch if ch.isalnum() else "_" for ch in layout_type.upper())
+        if export_path is None:
+            export_path = str(layouts_dir / f"layout_{safe_type}_{timestamp}.bmp")
+
         result = {
             "ok": True,
-            "layout_type": requested_layout_type,
-            "message": f"{requested_layout_type} 布局图已在 OpticStudio GUI 中打开",
-            "image_export_supported": False,
-            "image_export_note": (
-                "当前 OpticStudio/ZOS-API 的 Layout Analysis.ToFile 只会生成文本摘要，"
-                "不能生成可验证的位图文件；open_layout 已停用图片导出，请在 GUI 中查看布局窗口。"
-            ),
+            "layout_type": layout_type,
+            "message": f"{layout_type} 布局图已在 OpticStudio GUI 中打开",
+            "auto_export": auto_export,
         }
 
+        # 导出到文件，供 Agent 使用 view_image 检查结构；仅返回真实图片路径。
         if export_path:
-            result["export_path_ignored"] = str(export_path)
-            result["export_ignored_reason"] = "open_layout 不再尝试导出图片；该参数仅为兼容旧客户端而忽略。"
+            image_info = _export_verified_analysis_image(
+                analysis,
+                Path(export_path).parent,
+                Path(export_path).stem,
+                preferred_path=Path(export_path),
+            )
+            result.update(image_info)
+            if image_info.get("image_path"):
+                result["export_path"] = image_info["image_path"]
+                result["exported_to"] = image_info["image_path"]
+            else:
+                result["export_path"] = None
+                result["export_error"] = "Analysis.ToFile 未生成可验证的图片文件；已删除非图片导出。"
 
         # 注意：不要 Close()，让窗口保留在 GUI 中供用户查看
 
@@ -4082,15 +3953,7 @@ _ANALYSIS_ALIASES = {
     "fft_mtf": "fft_mtf",
     "fft_mtf_vs_field": "fft_mtf_vs_field",
     "huygens_mtf": "huygens_mtf",
-    "geometric_mtf": "geometric_mtf",
-    "geo_mtf": "geometric_mtf",
-    "geometric_mtf_vs_field": "geometric_mtf_vs_field",
-    "geo_mtf_vs_field": "geometric_mtf_vs_field",
     "field_curvature_distortion": "field_curvature_distortion",
-    "seidel": "seidel_diagram",
-    "seidel_diagram": "seidel_diagram",
-    "seidel_coefficients": "seidel_coefficients",
-    "seidel_coeffs": "seidel_coefficients",
     "wavefront_map": "wavefront_map",
 }
 
@@ -4103,11 +3966,7 @@ _ANALYSIS_METHODS = {
     "fft_mtf": "New_FftMtf",
     "fft_mtf_vs_field": "New_FftMtfvsField",
     "huygens_mtf": "New_HuygensMtf",
-    "geometric_mtf": "New_GeometricMtf",
-    "geometric_mtf_vs_field": "New_GeometricMtfvsField",
     "field_curvature_distortion": "New_FieldCurvatureAndDistortion",
-    "seidel_diagram": "New_SeidelDiagram",
-    "seidel_coefficients": "New_SeidelCoefficients",
     "wavefront_map": "New_WavefrontMap",
 }
 
@@ -4122,21 +3981,13 @@ _ANALYSIS_IDS = {
     "fft_mtf": 15,
     "fft_mtf_vs_field": 22,
     "huygens_mtf": 25,
-    "geometric_mtf": 18,
-    "geometric_mtf_vs_field": 23,
     "field_curvature_distortion": 3,
-    "seidel_diagram": 10,
-    "seidel_coefficients": 9,
     "wavefront_map": 54,
 }
 
 _ANALYSIS_SETTING_INTERFACES = {
     "fft_mtf_vs_field": "IAS_FftMtfvsField",
     "huygens_mtf": "IAS_HuygensMtf",
-    "geometric_mtf": "IAS_GeometricMtf",
-    "geometric_mtf_vs_field": "IAS_GeometricMtfvsField",
-    "seidel_diagram": "IAS_SeidelDiagram",
-    "seidel_coefficients": "IAS_SeidelCoefficients",
 }
 
 
@@ -4702,215 +4553,6 @@ def _attach_rendered_fallback_image(payload: dict, analysis_key: str) -> None:
         "image_export_semantics": semantics,
         "image_export_note": note,
     })
-
-
-def _analysis_capture_has_output(payload: dict) -> bool:
-    exports = payload.get("exports", {}) if isinstance(payload.get("exports"), dict) else {}
-    if exports.get("image_export_is_viewable_by_agent") or exports.get("text_export_ok"):
-        return True
-    counts = payload.get("results", {}).get("counts", {}) if isinstance(payload.get("results"), dict) else {}
-    for key in ("data_series", "data_grids", "scatter_points", "ray_data"):
-        try:
-            if int(counts.get(key, 0) or 0) > 0:
-                return True
-        except Exception:
-            continue
-    return False
-
-
-_SEIDEL_COEFFICIENT_LABELS = ["SPHA", "COMA", "ASTI", "FCUR", "DIST", "AXCL", "LACL", "TOTAL"]
-_NUMBER_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?")
-
-
-def _attach_seidel_coefficients_rendered_image(diagram_payload: dict, coeff_payload: dict) -> None:
-    table = _seidel_coefficients_from_capture(coeff_payload)
-    if not table.get("rows"):
-        diagram_payload["seidel_coefficients_parse_warning"] = "未能从 Seidel Coefficients 文本或结构化结果中解析出可绘图的系数表。"
-        return
-
-    coeff_payload["parsed_coefficients"] = table
-    export_dir = _analysis_export_dir(diagram_payload, coeff_payload)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    image_path = export_dir / f"seidel_coefficients_{timestamp}_rendered.png"
-    try:
-        _render_seidel_coefficients_png(table, image_path)
-    except Exception as e:
-        diagram_payload["seidel_coefficients_render_error"] = str(e)
-        return
-
-    image_info = {
-        "image_path": str(image_path),
-        "image_export_ok": True,
-        "image_export_kind": "png",
-        "image_export_is_bitmap": True,
-        "image_export_is_image": True,
-        "image_export_is_viewable_by_agent": True,
-        "image_export_source": "seidel_coefficients_rendered_fallback",
-        "image_export_semantics": "seidel_coefficients_bar_chart",
-        "image_export_note": "Zemax Seidel Diagram.ToFile 未生成真图片；MCP 已根据 Seidel Coefficients 由 Python 渲染 PNG 柱状图。",
-    }
-    diagram_exports = diagram_payload.setdefault("exports", {})
-    if isinstance(diagram_exports, dict):
-        diagram_exports.update(image_info)
-    coeff_exports = coeff_payload.setdefault("exports", {})
-    if isinstance(coeff_exports, dict):
-        coeff_exports.update(image_info)
-    diagram_payload["seidel_coefficients_plot"] = {
-        "labels": table.get("labels"),
-        "rows_used": len(table.get("rows") or []),
-        "image_path": str(image_path),
-    }
-
-
-def _analysis_export_dir(*payloads: dict) -> Path:
-    for payload in payloads:
-        exports = payload.get("exports") if isinstance(payload, dict) else None
-        if isinstance(exports, dict) and exports.get("directory"):
-            return Path(str(exports["directory"]))
-    return _WORKSPACE_ROOT / "layouts" / "analysis"
-
-
-def _seidel_coefficients_from_capture(payload: dict) -> dict:
-    text = ""
-    exports = payload.get("exports") if isinstance(payload, dict) else None
-    if isinstance(exports, dict):
-        text = _read_exported_text(exports.get("text_path"))
-    if not text:
-        text = str(payload.get("text_preview") or "")
-    table = _parse_seidel_coefficients_text(text)
-    if table.get("rows"):
-        table["source"] = "text"
-        return table
-    table = _seidel_coefficients_from_data_grids(payload)
-    if table.get("rows"):
-        table["source"] = "data_grid"
-    return table
-
-
-def _parse_seidel_coefficients_text(text: str) -> dict:
-    rows = []
-    max_values = 0
-    lines = str(text or "").splitlines()
-    table_start = None
-    for idx, line in enumerate(lines):
-        upper = line.upper()
-        if "SPHA" in upper and "COMA" in upper and "ASTI" in upper:
-            table_start = idx + 1
-            break
-    candidate_lines = lines[table_start:] if table_start is not None else lines
-    for line in candidate_lines:
-        stripped = line.strip()
-        if not stripped:
-            if table_start is not None and rows:
-                break
-            continue
-        if stripped.startswith(("-", "=")):
-            continue
-        match = re.match(r"^\s*(\d+)\b(.*)$", line)
-        if not match:
-            continue
-        values = [_finite_float(token.replace("D", "E").replace("d", "e")) for token in _NUMBER_RE.findall(match.group(2))]
-        values = [value for value in values if value is not None]
-        if len(values) < 3:
-            continue
-        values = values[:len(_SEIDEL_COEFFICIENT_LABELS)]
-        max_values = max(max_values, len(values))
-        rows.append({"surface": int(match.group(1)), "values": values})
-    if not rows:
-        return {"labels": [], "rows": []}
-    labels = _SEIDEL_COEFFICIENT_LABELS[:max_values]
-    _attach_coefficient_dicts(rows, labels)
-    return {"labels": labels, "rows": rows}
-
-
-def _seidel_coefficients_from_data_grids(payload: dict) -> dict:
-    results = payload.get("results") if isinstance(payload, dict) else None
-    grids = results.get("data_grids") if isinstance(results, dict) else None
-    if not isinstance(grids, list):
-        return {"labels": [], "rows": []}
-    rows = []
-    max_values = 0
-    for grid in grids:
-        values = grid.get("values") if isinstance(grid, dict) else None
-        if not isinstance(values, list):
-            continue
-        for idx, raw_row in enumerate(values, start=1):
-            numeric = [_finite_float(value) for value in (raw_row if isinstance(raw_row, list) else [])]
-            numeric = [value for value in numeric if value is not None]
-            if len(numeric) < 3:
-                continue
-            if abs(numeric[0] - round(numeric[0])) < 1e-9 and len(numeric) > 3:
-                surface = int(round(numeric[0]))
-                coeffs = numeric[1:]
-            else:
-                surface = idx
-                coeffs = numeric
-            coeffs = coeffs[:len(_SEIDEL_COEFFICIENT_LABELS)]
-            max_values = max(max_values, len(coeffs))
-            rows.append({"surface": surface, "values": coeffs})
-    if not rows:
-        return {"labels": [], "rows": []}
-    labels = _SEIDEL_COEFFICIENT_LABELS[:max_values]
-    _attach_coefficient_dicts(rows, labels)
-    return {"labels": labels, "rows": rows}
-
-
-def _attach_coefficient_dicts(rows: list, labels: list[str]) -> None:
-    for row in rows:
-        values = row.get("values") or []
-        row["coefficients"] = {labels[idx]: values[idx] for idx in range(min(len(labels), len(values)))}
-        row["abs_sum"] = sum(abs(value) for value in values if isinstance(value, (int, float)))
-
-
-def _render_seidel_coefficients_png(table: dict, path: Path) -> None:
-    rows = [row for row in (table.get("rows") or []) if isinstance(row, dict) and row.get("values")]
-    if not rows:
-        raise ValueError("no Seidel coefficient rows")
-    labels = list(table.get("labels") or _SEIDEL_COEFFICIENT_LABELS)[:5]
-    rows = rows[:32]
-    plot_width = max(860, min(1500, 90 + len(rows) * max(28, len(labels) * 12)))
-    width = plot_width + 210
-    height = 650
-    canvas = _new_rgb_canvas(width, height, (255, 255, 255))
-    left, top, right, bottom = 78, 82, plot_width, 560
-    colors = [(35, 116, 225), (226, 74, 60), (45, 150, 85), (150, 85, 190), (215, 140, 45)]
-    values = []
-    for row in rows:
-        coeffs = row.get("coefficients") or {}
-        for label in labels:
-            value = _finite_float(coeffs.get(label))
-            if value is not None:
-                values.append(value)
-    max_abs = max([abs(value) for value in values] + [1.0])
-    y_limit = _nice_axis_limit(max_abs * 1.08)
-
-    _draw_text(canvas, 24, 18, "SEIDEL COEFFICIENTS FALLBACK", (30, 30, 30), scale=2)
-    _draw_text(canvas, 24, 48, "PYTHON RENDERED FROM TEXT DATA", (90, 90, 90), scale=1)
-    _draw_plot_axes(canvas, left, top, right, bottom, -0.5, len(rows) - 0.5, -y_limit, y_limit)
-    zero_y = int(bottom - (0 + y_limit) / (2 * y_limit) * (bottom - top))
-    group_width = (right - left) / max(1, len(rows))
-    bar_width = max(2, int(group_width / (len(labels) + 1) * 0.78))
-    for row_idx, row in enumerate(rows):
-        coeffs = row.get("coefficients") or {}
-        group_left = left + row_idx * group_width
-        for label_idx, label in enumerate(labels):
-            value = _finite_float(coeffs.get(label))
-            if value is None:
-                continue
-            center = group_left + (label_idx + 1) * group_width / (len(labels) + 1)
-            y = int(bottom - (value + y_limit) / (2 * y_limit) * (bottom - top))
-            _draw_rect(canvas, int(center - bar_width / 2), min(y, zero_y), int(center + bar_width / 2), max(y, zero_y), colors[label_idx % len(colors)], fill=True)
-        if row_idx % max(1, len(rows) // 18) == 0:
-            _draw_text(canvas, int(group_left + group_width * 0.2), bottom + 20, f"S{row.get('surface')}", (55, 55, 55), scale=1)
-
-    legend_x = right + 28
-    legend_y = top + 8
-    for idx, label in enumerate(labels):
-        y = legend_y + idx * 24
-        _draw_rect(canvas, legend_x, y, legend_x + 18, y + 10, colors[idx % len(colors)], fill=True)
-        _draw_text(canvas, legend_x + 28, y - 1, label, (40, 40, 40), scale=1)
-    _draw_text(canvas, left, bottom + 42, "SURFACE", (55, 55, 55), scale=1)
-    _write_png(path, canvas)
 
 
 def _render_spot_summary_png(spot_data: dict, path: Path, ray_points: dict | None = None) -> None:
@@ -5485,7 +5127,6 @@ _FONT_5X7 = {
     "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
     "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
     "G": ("01111", "10000", "10000", "10011", "10001", "10001", "01110"),
-    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
     "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
     "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
     "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
@@ -6370,14 +6011,12 @@ _READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "get_vignetting_diagram_data",
     "get_spot_diagram_data",
     "get_fft_mtf_vs_field",
-    "get_geometric_mtf_data",
     "get_ray_fan_data",
     "get_opd_fan_data",
     "get_longitudinal_aberration_data",
     "get_lateral_color_data",
     "get_field_curvature_distortion_data",
     "get_wavefront_map_data",
-    "get_seidel_diagram_data",
     "generate_validation_report",
     "check_manufacturability",
     "get_glass_catalogs",
